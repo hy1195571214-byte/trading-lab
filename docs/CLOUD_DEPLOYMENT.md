@@ -51,4 +51,4 @@ No local SQLite, API key, existing private data or personal files are automatica
 
 ## Current verification boundary
 
-Local gateway tests and frontend build are available; backend auth/cloud compatibility regression tests pass. Production PostgreSQL and public reachability must be checked after account login/provisioning. Do not claim deployment or cross-device access until a live URL responds successfully.
+Local gateway tests and frontend build pass; 48 backend/auth/engine regression tests pass. Neon Free PostgreSQL has been tested with real schema initialization, encrypted key storage, authenticated experiment creation, approval, next-open fills, rejection, persistence, JSON/CSV exports and logout. Cloudflare CLI authorization is complete. Render repository authorization and the actual public deployment are still pending. Do not claim deployment or cross-device access until a live URL responds successfully.
