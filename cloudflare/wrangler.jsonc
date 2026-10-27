@@ -15,5 +15,8 @@
   "observability": {
     "enabled": false
   },
-  "account_id": "ad2b681fa1b22ac434d9fc4d5e69bc7c"
+  "account_id": "ad2b681fa1b22ac434d9fc4d5e69bc7c",
+  "vars": {
+    "ORIGIN_URL": "https://trading-lab-api-neyw.onrender.com"
+  }
 }

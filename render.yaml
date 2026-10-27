@@ -4,7 +4,7 @@ services:
     name: trading-lab-api
     runtime: docker
     plan: free
-    region: singapore
+    region: ohio
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:

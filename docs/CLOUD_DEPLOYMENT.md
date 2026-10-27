@@ -49,6 +49,21 @@ Browser authenticates to `/api/auth/login`; backend returns a signed HttpOnly/Se
 
 No local SQLite, API key, existing private data or personal files are automatically migrated. Seed synthetic data only. The production model endpoint is unconfigured until the owner chooses one. A model provider may charge separately; deployment itself must not issue paid LLM calls.
 
-## Current verification boundary
+## Verified deployment — 2026-10-28
 
-Local gateway tests and frontend build pass; 48 backend/auth/engine regression tests pass. Neon Free PostgreSQL has been tested with real schema initialization, encrypted key storage, authenticated experiment creation, approval, next-open fills, rejection, persistence, JSON/CSV exports and logout. Cloudflare CLI authorization is complete. Render repository authorization and the actual public deployment are still pending. Do not claim deployment or cross-device access until a live URL responds successfully.
+- Public platform: https://trading-lab.hy1195571214.workers.dev
+- Cloudflare account: `ad2b681fa1b22ac434d9fc4d5e69bc7c`; Worker `trading-lab`; Free tier.
+- Backend: https://trading-lab-api-neyw.onrender.com ; Render service `srv-dbgdcbetlv9c73dv8nlg`, Ohio, Free ($0/month).
+- Backend deployed source: `eb8f0301e0fd3d626713ac383f7a46cca121f4e1`.
+- Database: Neon project `mute-recipe-14995330`, production branch `br-soft-queen-b5jq6b8w`, Ohio, Free plan.
+- Source: https://github.com/hy1195571214-byte/trading-lab (private). Render GitHub App is limited to this one repository.
+
+Verified local checks: 48 backend/auth/engine tests; 4 gateway tests; TypeScript/production build; Cloudflare deployment validation. Verified cloud checks: real PostgreSQL schema, encrypted credential roundtrip, persistence, auth protection, Secure/HttpOnly login cookie, logout, safe settings responses, JSON/CSV exports. A public browser created `Public browser verification — DEMO`, advanced three sessions, approved proposals, observed next-open fills, and rejected the final proposal. The browser console reported no errors or warnings. An independent HTTP client verified the same public Cloudflare API.
+
+### Signing in
+
+Open the public platform URL. The owner can view the shared workspace password in Render → `trading-lab-api` → Environment → `TRADING_LAB_WORKSPACE_PASSWORD`. No password is included in this document, source, browser bundle, or deployment log. Share the workspace password only with the intended teammates. This is one shared research workspace; individual user accounts and per-user data isolation are not implemented.
+
+The owner is left signed in in the current app browser. Other devices need the shared workspace password. Render Free can take roughly a minute to wake after inactivity. A chosen LLM provider is still unconfigured; current acceptance records use clearly labelled synthetic/demo strategies and do not represent investment results or real-model validation.
+
+For frontend-only/source-documentation changes, `[skip render]` in the Git commit message avoids an unnecessary backend rebuild. Rebuild the frontend before running `scripts/cloudflare.sh deploy`; deploy the updated backend normally for actual backend source changes. Secrets stay in the providers' runtime configuration and must never be committed.

@@ -4,6 +4,10 @@ AI-assisted quantitative trading research platform for **Can AI Trade Alone? An 
 
 The interface follows the approved Figma graphite/lime design with monochrome pixel expert badges. All execution is simulated. No real brokerage account or live order endpoint is included.
 
+## Public deployment
+
+Open https://trading-lab.hy1195571214.workers.dev. The platform uses a shared workspace password. The owner can view it in Render → trading-lab-api → Environment → TRADING_LAB_WORKSPACE_PASSWORD. Render Free may take about a minute to wake after inactivity. Deployment configuration and verification are in `docs/CLOUD_DEPLOYMENT.md`.
+
 ## Start locally
 
 Requires Python 3.11+ and Node.js 22+. From this folder:
