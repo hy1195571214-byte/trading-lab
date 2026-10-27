@@ -1,0 +1,14 @@
+.git
+.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+backend/tests
+backend/app/engine_tests
+*.sqlite*
+*.db
+.env*
+backend/data
+work
+outputs
+.playwright-cli

@@ -1,0 +1,7 @@
+{
+  "name": "trading-lab-cloudflare-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {"check": "node --test worker.test.mjs", "deploy": "wrangler deploy", "whoami": "wrangler whoami"},
+  "devDependencies": {"wrangler": "^4.0.0"}
+}

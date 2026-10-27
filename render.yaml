@@ -1,0 +1,22 @@
+# Free-tier backend. Do not attach a paid disk or Render Postgres.
+services:
+  - type: web
+    name: trading-lab-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: TRADING_LAB_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: TRADING_LAB_WORKSPACE_PASSWORD
+        sync: false
+      - key: TRADING_LAB_SESSION_SECRET
+        sync: false
+      - key: TRADING_LAB_ORIGIN_TOKEN
+        sync: false
+      - key: TRADING_LAB_ENCRYPTION_KEY
+        sync: false
