@@ -344,6 +344,41 @@ def test_settings_secret_write_only_and_local_compatible_llm(api):
         server.shutdown(); thread.join(timeout=2); server.server_close()
 
 
+def test_deepseek_thinking_disabled_only_for_exact_official_hostname(monkeypatch):
+    captured=[]
+    original_client=main.httpx.AsyncClient
+    def mock_client(**kwargs):
+        def handler(request):
+            captured.append((request.url.host,json.loads(request.content)))
+            return main.httpx.Response(200,json={'model':'mock','choices':[{'message':{'content':'OK'}}]})
+        return original_client(transport=main.httpx.MockTransport(handler),**kwargs)
+    monkeypatch.setattr(main.httpx,'AsyncClient',mock_client)
+    monkeypatch.setattr(main,'_secret',lambda:'test-key')
+    tool=[{'type':'function','function':{'name':'submit_trade_proposal','parameters':{'type':'object'}}}]
+    async def exercise():
+        for base,tools in [
+            ('https://api.deepseek.com/v1',None),
+            ('https://api.deepseek.com/v1',tool),
+            ('https://api.deepseek.com.attacker.invalid/v1',tool),
+            ('https://provider.example/v1',tool),
+        ]:
+            await main._llm_request([{'role':'user','content':'test'}],tools=tools,
+                                    settings={'base_url':base,'model':'deepseek-flash'})
+    asyncio.run(exercise())
+    assert len(captured)==4
+    for index,(_,payload) in enumerate(captured):
+        assert payload['max_tokens']==512
+        assert payload['model']=='deepseek-flash'
+        assert payload['temperature']==0
+        if index < 2:
+            assert payload['thinking']=={'type':'disabled'}
+        else:
+            assert 'thinking' not in payload
+    assert 'tool_choice' not in captured[0][1]
+    assert captured[1][1]['tool_choice']['function']['name']=='submit_trade_proposal'
+    assert captured[2][0]=='api.deepseek.com.attacker.invalid'
+
+
 def test_legacy_settings_migrate_key_and_backfill_new_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(main,'DB_PATH',tmp_path/'legacy.sqlite3')
     monkeypatch.setattr(main,'SECRET_PATH',tmp_path/'data'/'secret.json')

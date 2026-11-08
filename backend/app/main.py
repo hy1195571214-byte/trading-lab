@@ -362,6 +362,11 @@ async def _llm_request(messages,tools=None,timeout=30,settings=None):
     if not s.get('base_url') or not s.get('model'):raise RuntimeError('LLM base URL and model must be configured')
     url=s['base_url'].rstrip('/')+'/chat/completions'
     payload={'model':s['model'],'messages':messages,'temperature':0,'max_tokens':512}
+    # DeepSeek's official API defaults to thinking mode, which does not support
+    # named tool_choice. Disable it only for the exact official API hostname.
+    from urllib.parse import urlparse
+    if urlparse(s['base_url']).hostname == 'api.deepseek.com':
+        payload['thinking']={'type':'disabled'}
     if tools:
         payload['tools']=tools
         fn=tools[0]['function']['name']
