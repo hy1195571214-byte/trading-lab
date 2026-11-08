@@ -421,7 +421,7 @@ def _config(body):
         snapshots.append({**e,'role':role})
     traders=[x for x in snapshots if x['role']=='trader']
     if snapshots and len(traders)!=1:raise HTTPException(422,'Select exactly one trading strategy expert; additional experts must be advisors')
-    cfg['dataset_checksum']=ds['checksum']; cfg['dataset_version']=ds['id']; cfg['dataset_synthetic']=bool(ds['synthetic']); cfg['expert_snapshots']=snapshots; cfg['team']=[{'expert_id':x['id'],'role':x['role'],'enabled':True,**x} for x in snapshots]; cfg['prompt_version']='expert-team-v1'
+    cfg['dataset_checksum']=ds['checksum']; cfg['dataset_version']=ds['id']; cfg['dataset_synthetic']=bool(ds['synthetic']); cfg['expert_snapshots']=snapshots; cfg['team']=[{'expert_id':x['id'],'role':x['role'],'enabled':True,**x} for x in snapshots]; cfg['prompt_version']='expert-team-v2-hold-target-contract'
     cfg['settings_snapshot']={k:v for k,v in _settings().items() if k!='api_key'}; cfg['max_calls']=cfg['max_calls'] if cfg['max_calls'] is not None else _settings()['max_calls']; cfg['budget_usd']=cfg['budget_usd'] if cfg['budget_usd'] is not None else _settings()['budget_usd']
     cfg['symbols']=sorted({b['symbol'] for b in chosen})
     if cfg['strategy']=='agent' and not snapshots:raise HTTPException(422,'Select one trader expert and any optional advisors')
@@ -446,8 +446,14 @@ def get_experiment(experiment_id):return _decode_exp(_experiment(experiment_id))
 
 def _record_error(eid, msg, live_state=None):
     r=_experiment(eid); state=live_state if live_state is not None else json.loads(r['state']); state['status']='paused'; state.setdefault('events',[]).append({'type':'error','message':msg}); _save_experiment(eid,r['name'],'paused',json.loads(r['config']),state); _event(eid,{'type':'error','message':msg})
-def _tool_definition(symbols):
-    return [{'type':'function','function':{'name':'submit_trade_proposal','description':'Submit one full target portfolio. Use hold to keep current positions.','parameters':{'type':'object','properties':{'action':{'type':'string','enum':['rebalance','hold']},'targets':{'type':'object','additionalProperties':{'type':'number'}},'rationale':{'type':'string'},'risks':{'type':'array','items':{'type':'string'}}},'required':['action','targets','rationale'],'additionalProperties':False}}}]
+def _tool_definition(symbols, hold_contract=False):
+    description='Submit one full target portfolio. Use hold to keep current positions.'
+    properties={'action':{'type':'string','enum':['rebalance','hold']},'targets':{'type':'object','additionalProperties':{'type':'number'}},'rationale':{'type':'string'},'risks':{'type':'array','items':{'type':'string'}}}
+    if hold_contract:
+        description='Submit one trade proposal. For hold, preserve current positions and set targets to exactly {}. Any non-empty desired target weights require action rebalance. Rebalance targets describe the complete desired allocation; omitted symbols target zero.'
+        properties['action']['description']='Use hold only when preserving current positions with targets exactly {}. Use rebalance whenever specifying desired target weights.'
+        properties['targets']['description']='Must be exactly {} when action is hold. For rebalance, provide the complete desired allocation; an empty object means cash only.'
+    return [{'type':'function','function':{'name':'submit_trade_proposal','description':description,'parameters':{'type':'object','properties':properties,'required':['action','targets','rationale'],'additionalProperties':False}}}]
 def _opinion_tool():
     return [{'type':'function','function':{'name':'submit_expert_opinion','description':'Return an evidence-based advisory opinion, not an order.','parameters':{'type':'object','properties':{'stance':{'type':'string','enum':['support','caution','oppose','neutral']},'rationale':{'type':'string'},'risks':{'type':'array','items':{'type':'string'}}},'required':['stance','rationale','risks'],'additionalProperties':False}}}]
 async def _expert_call(cfg,state,expert,snapshot,role,context=None):
@@ -455,9 +461,13 @@ async def _expert_call(cfg,state,expert,snapshot,role,context=None):
     settings=cfg['settings_snapshot']; usage=state.setdefault('llm_usage',[]); calls=int(state.get('llm_calls',0)); spend=sum(float(x.get('estimated_cost_usd') or 0) for x in usage)
     if calls>=int(cfg['max_calls']):raise RuntimeError('LLM call limit exhausted')
     if spend>=float(cfg['budget_usd']):raise RuntimeError('LLM budget exhausted')
-    tool=_tool_definition(cfg['symbols']) if role=='trader' else _opinion_tool()
+    hold_contract=cfg.get('prompt_version')=='expert-team-v2-hold-target-contract'
+    tool=_tool_definition(cfg['symbols'],hold_contract=hold_contract) if role=='trader' else _opinion_tool()
     expected='submit_trade_proposal' if role=='trader' else 'submit_expert_opinion'
-    messages=[{'role':'system','content':f"You are expert {expert['name']}. Follow this card's instructions: {expert.get('instructions','')}. Use only the point-in-time information supplied. Never invent unavailable data. Return one {expected} tool call; advisers must not issue orders."},{'role':'user','content':json.dumps({'snapshot':snapshot,'expert_card':expert,'role':role,'team_context':context,'hard_constraints':{'max_position_weight':cfg['max_position_weight'],'symbols':cfg['symbols']}})}]
+    system_content=f"You are expert {expert['name']}. Follow this card's instructions: {expert.get('instructions','')}. Use only the point-in-time information supplied. Never invent unavailable data. Return one {expected} tool call; advisers must not issue orders."
+    if role=='trader' and hold_contract:
+        system_content += " Output contract: for a HOLD action, preserve the current allocation and set targets to exactly {}. If you specify any desired target weights, use REBALANCE; do not label weighted targets as HOLD. For REBALANCE, targets is the complete desired allocation, and an empty targets object means cash only."
+    messages=[{'role':'system','content':system_content},{'role':'user','content':json.dumps({'snapshot':snapshot,'expert_card':expert,'role':role,'team_context':context,'hard_constraints':{'max_position_weight':cfg['max_position_weight'],'symbols':cfg['symbols']}})}]
     serialized_messages=json.dumps(messages,ensure_ascii=False)
     if len(serialized_messages)>200_000:raise RuntimeError('LLM context exceeds the 200,000 character safety limit')
     if settings.get('input_cost_per_million') is not None and settings.get('output_cost_per_million') is not None:
@@ -481,6 +491,8 @@ async def _expert_call(cfg,state,expert,snapshot,role,context=None):
         call=next(c for c in toolcalls if c.get('function',{}).get('name')==expected); args=json.loads(call['function']['arguments'])
         if role=='trader':
             if args['action'] not in ('rebalance','hold') or not isinstance(args['targets'],dict):raise ValueError('Malformed proposal')
+            if args['action']=='hold' and args['targets']:
+                raise ValueError('A hold action must use an empty targets object; use rebalance to specify target weights.')
             if set(args['targets'])-set(cfg['symbols']):raise ValueError('Proposal contains unknown symbols')
             for k,v in args['targets'].items():
                 if isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<0 or v>cfg['max_position_weight']:raise ValueError('Proposal target violates position limits')

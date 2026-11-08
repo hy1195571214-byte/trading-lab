@@ -420,6 +420,67 @@ def test_invalid_llm_output_counts_attempt_and_retry_keeps_same_date(api, monkey
     assert second['state']['llm_calls']==2 and second['decisions']==[]
 
 
+def test_hold_with_nonempty_targets_is_marked_invalid_output(api, monkeypatch):
+    api.put('/api/settings',json={'base_url':'http://127.0.0.1:1/v1','model':'mock-model','api_key':'mock-key','input_cost_per_million':1,'output_cost_per_million':1})
+    async def bad_hold(*args,**kwargs):
+        return {'model':'mock-model','choices':[{'message':{'tool_calls':[{'function':{'name':'submit_trade_proposal','arguments':json.dumps({'action':'hold','targets':{'DEMO-A':0.4},'rationale':'Keep this allocation','risks':[]})}}]}}],'usage':{'prompt_tokens':100,'completion_tokens':40}}
+    monkeypatch.setattr(main,'_llm_request',bad_hold)
+    body=base_payload(api,provider_mode='llm',team=[{'expert_id':'momentum','role':'trader','enabled':True}])
+    created=api.post('/api/experiments',json=body).json(); eid=created['id']
+    detail=api.post(f'/api/experiments/{eid}/step').json()
+    assert detail['status']=='paused' and detail['decisions']==[]
+    assert detail['llm_usage'][0]['status']=='invalid_output'
+    assert 'hold action must use an empty targets object' in detail['llm_usage'][0]['error']
+    assert detail['config']['prompt_version']=='expert-team-v2-hold-target-contract'
+
+
+def test_hold_contract_is_explicit_in_tool_and_prompt_and_empty_hold_is_valid(api, monkeypatch):
+    api.put('/api/settings',json={'base_url':'http://127.0.0.1:1/v1','model':'mock-model','api_key':'mock-key','input_cost_per_million':1,'output_cost_per_million':1})
+    captured=[]
+    async def good_hold(messages,tools,**kwargs):
+        captured.append((messages,tools))
+        fn=tools[0]['function']['name']
+        args={'action':'hold','targets':{},'rationale':'Preserve current allocation','risks':[]}
+        return {'model':'mock-model','choices':[{'message':{'tool_calls':[{'function':{'name':fn,'arguments':json.dumps(args)}}]}}],'usage':{'prompt_tokens':100,'completion_tokens':40}}
+    monkeypatch.setattr(main,'_llm_request',good_hold)
+    body=base_payload(api,provider_mode='llm',team=[{'expert_id':'momentum','role':'trader','enabled':True}])
+    created=api.post('/api/experiments',json=body).json(); eid=created['id']
+    detail=api.post(f'/api/experiments/{eid}/step').json()
+    assert detail['status']=='ready' and detail['decisions'][0]['action']=='hold'
+    assert detail['orders']==[] and len(captured)==2
+    for messages,tools in captured:
+        prompt=messages[0]['content'].lower()
+        assert 'hold action' in prompt and 'targets to exactly {}' in prompt
+        function=tools[0]['function']
+        assert 'targets to exactly {}' in function['description']
+        assert 'must be exactly {} when action is hold' in function['parameters']['properties']['targets']['description'].lower()
+
+
+def test_legacy_prompt_snapshot_keeps_legacy_tool_contract_on_resume(api, monkeypatch):
+    api.put('/api/settings',json={'base_url':'http://127.0.0.1:1/v1','model':'mock-model','api_key':'mock-key','input_cost_per_million':1,'output_cost_per_million':1})
+    captured=[]
+    async def legacy_response(messages,tools,**kwargs):
+        captured.append((messages,tools))
+        fn=tools[0]['function']['name']
+        args={'action':'rebalance','targets':{'DEMO-A':0.25},'rationale':'Legacy-compatible mock','risks':[]}
+        return {'model':'mock-model','choices':[{'message':{'tool_calls':[{'function':{'name':fn,'arguments':json.dumps(args)}}]}}],'usage':{'prompt_tokens':100,'completion_tokens':40}}
+    monkeypatch.setattr(main,'_llm_request',legacy_response)
+    body=base_payload(api,provider_mode='llm',team=[{'expert_id':'momentum','role':'trader','enabled':True}])
+    created=api.post('/api/experiments',json=body).json(); eid=created['id']
+    cfg=created['config']; cfg['prompt_version']='expert-team-v1'
+    with main._db_lock,main._connect() as conn:
+        conn.execute('UPDATE experiments SET config=? WHERE id=?',(json.dumps(cfg),eid))
+    detail=api.post(f'/api/experiments/{eid}/step').json()
+    assert detail['status']=='ready' and len(detail['decisions'])==1
+    assert detail['config']['prompt_version']=='expert-team-v1'
+    assert len(captured)==2
+    for messages,tools in captured:
+        function=tools[0]['function']
+        assert function['description']=='Submit one full target portfolio. Use hold to keep current positions.'
+        assert 'description' not in function['parameters']['properties']['targets']
+        assert 'Output contract:' not in messages[0]['content']
+
+
 def test_low_dollar_budget_stops_before_call_and_holds_current_date(api, monkeypatch):
     api.put('/api/settings',json={'base_url':'http://127.0.0.1:1/v1','model':'mock-model','api_key':'mock-key','input_cost_per_million':1,'output_cost_per_million':1})
     async def unexpected_call(*args,**kwargs):raise AssertionError('budget preflight should stop before sending')
