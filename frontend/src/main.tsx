@@ -14,6 +14,7 @@ import {
 } from "./ui";
 import { Any, req } from "./api";
 import { AuthContext, AuthGate } from "./AuthGate";
+import ReplayDesk from "./ReplayDesk";
 
 const nav = [
   ["Overview", "Overview"],
@@ -29,13 +30,14 @@ const nav = [
 ];
 function App() {
   const auth = useContext(AuthContext);
-  const [page, S] = useState("Overview"),
+  const initialQuery = new URLSearchParams(window.location.search);
+  const [page, S] = useState(initialQuery.get("view") === "desk" ? "Trading desk" : "Overview"),
     [datasets, D] = useState<Any[]>([]),
     [experts, E] = useState<Any[]>([]),
     [runs, R] = useState<Any[]>([]),
     [reviews, V] = useState<Any[]>([]),
     [activity, A] = useState<Any[]>([]),
-    [sel, Q] = useState(localStorage.getItem("trading-lab-selected") || ""),
+    [sel, Q] = useState(initialQuery.get("experiment") || localStorage.getItem("trading-lab-selected") || ""),
     [detail, X] = useState<Any | null>(null),
     [settings, T] = useState<Any>({}),
     [busy, B] = useState(false),
@@ -79,12 +81,16 @@ function App() {
   useEffect(() => {
     reload();
   }, []);
+  useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior }); }, [page]);
   useEffect(() => {
-    if (sel)
+    let active = true;
+    if (sel) {
+      X(null);
       req(`/experiments/${sel}`)
-        .then(X)
-        .catch((e: any) => Z(e.message));
-    else X(null);
+        .then((data) => { if (active) X(data); })
+        .catch((e: any) => { if (active) Z(e.message); });
+    } else X(null);
+    return () => { active = false; };
   }, [sel]);
   useEffect(() => {
     if (!sel || detail?.status !== "running") return;
@@ -201,32 +207,6 @@ function App() {
                 ＋ New experiment
               </button>
             )}
-            {page === "Trading desk" && detail && (
-              <>
-            <button
-                  disabled={busy || detail.status === "awaiting_review" || detail.status === "completed"}
-                  onClick={() =>
-                    doRun(detail.status === "running" ? "pause" : "run")
-                  }
-                >
-                  {detail.status === "running"
-                    ? "Pause run"
-                    : detail.status === "paused"
-                      ? "Retry paused run"
-                      : "Run"}
-                </button>
-                <button
-                  className="primary"
-                  disabled={
-                    detail.status === "awaiting_review" ||
-                    detail.status === "completed"
-                  }
-                  onClick={() => doStep()}
-                >
-                  Next day →
-                </button>
-              </>
-            )}
           </div>
         </div>
         {err && (
@@ -279,6 +259,7 @@ function App() {
             decision={(d: any, act: string) => review(d, act)}
             doStep={doStep}
             doRun={doRun}
+            busy={busy}
             selectExp={selectExp}
             runs={runs}
             branch={() => M("branch")}
@@ -784,6 +765,7 @@ function Desk({
   decision,
   doStep,
   doRun,
+  busy,
   selectExp,
   runs,
   branch,
@@ -798,134 +780,11 @@ function Desk({
         <Btn onClick={() => go("Experiments")}>Browse experiments</Btn>
       </Panel>
     );
-  const waiting = (detail.decisions || []).find(
-    (d: any) => d.status === "pending" || d.status === "awaiting_review",
-  );
-  const proposal = waiting?.original_proposal || waiting?.proposal || {};
   const baseline =
     detail.config?.strategy && detail.config.strategy !== "agent";
   return (
     <>
-      <div className="toolbar replay">
-        <span className="tag lime">
-          {baseline
-            ? `DETERMINISTIC BASELINE · ${detail.config.strategy}`
-            : detail.config?.provider_mode === "demo"
-              ? "DETERMINISTIC AGENT DEMO"
-              : "LLM AGENT"}
-        </span>
-        <span>
-          {detail.config?.start_date} →{" "}
-          {detail.state?.current_date ||
-            detail.state?.date ||
-            detail.config?.end_date}
-        </span>
-        <Btn
-          disabled={!!waiting || detail.status === "completed"}
-          onClick={() => doRun(detail.status === "running" ? "pause" : "run")}
-        >
-          {detail.status === "running"
-            ? "Pause run"
-            : detail.status === "paused"
-              ? "Retry paused run"
-              : "Run"}
-        </Btn>
-        <Btn
-          disabled={!!waiting || detail.status === "completed"}
-          kind="primary"
-          onClick={doStep}
-        >
-          Next day →
-        </Btn>
-        <Btn onClick={branch}>Create oversight branch</Btn>
-      </div>
-      <KPIs detail={detail} />
-      <div className="grid2 mainpanels">
-        <Panel title="Portfolio performance">
-          <Chart
-            history={detail.history}
-            benchmark={detail.benchmark_history}
-          />
-          <div className="micro">
-            Sharpe {detail.metrics?.sharpe ?? "—"}　 Orders{" "}
-            {detail.orders?.length || 0}　 Fees {money(detail.metrics?.fees)}
-          </div>
-        </Panel>
-        <Panel title="Agent desk">
-          <span className={"tag " + (waiting ? "warn" : "")}>
-            {waiting ? "Awaiting review" : detail.status}
-          </span>
-          <h2>{waiting ? "Review required" : "Replay state"}</h2>
-          {waiting ? (
-            <>
-              <div className="decision-meta">
-                {waiting.as_of_date ||
-                  waiting.date ||
-                  "Decision date unavailable"}{" "}
-                · {proposal.action || waiting.action || "Proposal"} ·{" "}
-                {proposal.strategy || waiting.strategy || "Recorded strategy"}
-              </div>
-              <p>
-                {proposal.rationale ||
-                  waiting.rationale ||
-                  "No rationale was returned with this proposal."}
-              </p>
-              <p>
-                <b>Target weights</b>
-              </p>
-              {proposal.targets &&
-                Object.entries(proposal.targets).map(([symbol, weight]) => (
-                  <div className="target-row" key={symbol}>
-                    <span>{symbol}</span>
-                    <b>{pct(weight)}</b>
-                  </div>
-                ))}
-              {Array.isArray(proposal.risks) && proposal.risks.length > 0 && (
-                <p>
-                  <b>Risk notes</b>
-                  <br />
-                  {proposal.risks.join(" · ")}
-                </p>
-              )}
-              {detail.expert_opinions?.length > 0 && (
-                <div className="opinions">
-                  <b>Expert opinions</b>
-                  {detail.expert_opinions.map((opinion: Any) => (
-                    <div
-                      className="opinion"
-                      key={opinion.expert_id || opinion.name}
-                    >
-                      <span>
-                        {opinion.name || opinion.expert_id} ·{" "}
-                        {opinion.stance || opinion.role || "opinion"}
-                      </span>
-                      <small>
-                        {opinion.rationale || "No rationale provided."}
-                      </small>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <p className="muted">
-                {String(proposal.action || "").toLowerCase() === "hold"
-                  ? "This HOLD proposal keeps the current portfolio. Approval records the decision and creates no new order."
-                  : "Approval queues the order for eligible next-session execution; it does not fill it now."}
-              </p>
-              <Btn kind="primary" onClick={() => decision(waiting, "approve")}>
-                Approve
-              </Btn>
-              <Btn onClick={() => decision(waiting, "modify")}>Modify</Btn>
-              <Btn kind="danger" onClick={() => decision(waiting, "reject")}>
-                Reject
-              </Btn>
-            </>
-          ) : (
-            <p>
-              Only recorded server decisions and replay state are shown here.
-            </p>
-          )}
-        </Panel>
-      </div>
+      <ReplayDesk detail={detail} doStep={doStep} doRun={doRun} branch={branch} decision={decision} experts={experts} busy={busy} />
       <Panel
         title={baseline ? "Experts not used by this baseline" : "Expert team"}
       >
@@ -1631,7 +1490,7 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
                     <td>{pct(x.metrics?.total_return)}</td>
                     <td>{pct(x.metrics?.max_drawdown)}</td>
                     <td>{pct(x.metrics?.annualized_volatility)}</td>
-                    <td>{money(x.metrics?.fees_paid ?? x.metrics?.fees)}</td>
+                    <td>{money(x.metrics?.fees_paid ?? x.metrics?.fees, 2)}</td>
                     <td>{x.metrics?.sharpe ?? "—"}</td>
                   </tr>
                 ))}
@@ -1658,7 +1517,7 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
         {reportDetail && !reportLoading && <>
           <div className="kpis report-kpis">
             <div className="kpi"><label>Annualized volatility</label><b>{pct(reportDetail.metrics?.annualized_volatility)}</b></div>
-            <div className="kpi"><label>Trading fees</label><b>{money(reportDetail.metrics?.fees_paid ?? reportDetail.metrics?.fees)}</b></div>
+            <div className="kpi"><label>Trading fees</label><b>{money(reportDetail.metrics?.fees_paid ?? reportDetail.metrics?.fees, 2)}</b></div>
             <div className="kpi"><label>Human reviews</label><b>{reviewedDecisions.length}</b><small>Approve {reviewCounts.approve} · Modify {reviewCounts.modify} · Reject {reviewCounts.reject}</small></div>
             <div className="kpi"><label>LLM calls / estimated cost</label><b>{reportDetail.state?.llm_calls ?? usage.length} / {money(estimatedCost, 6)}</b><small>Cost sums recorded estimates only{usage.some((item: Any) => item.estimated_cost_usd == null) ? "; some costs unknown" : ""}</small></div>
           </div>
