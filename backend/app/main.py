@@ -221,7 +221,7 @@ def _decode_exp(r):
             benchmark_history=report.get('history',[]); benchmark_metrics=report.get('metrics')
     holdings=[{'symbol':s,'quantity':p.get('quantity',0),'weight':p.get('quantity',0)*p.get('last_price',0)/state.get('equity',1) if state.get('equity') else 0,'market_value':p.get('quantity',0)*p.get('last_price',0),'price_date':p.get('last_price_date'),'is_stale':p.get('last_price_date')!=state.get('current_date')} for s,p in state.get('positions',{}).items()]
     state_events=state.get('events',[]); db_events=[{'id':x['id'],'created_at':x['created_at'],**json.loads(x['event'])} for x in _rows('SELECT * FROM events WHERE experiment_id=? ORDER BY id',(r['id'],))]
-    return {'id':r['id'],'name':r['name'],'status':r['status'],'config':cfg,'state':state,'metrics':metrics,'history':state.get('history',[]),'benchmark_history':benchmark_history,'benchmark_metrics':benchmark_metrics,'decisions':state.get('decisions',[]),'orders':state.get('orders',[]),'events':state_events+db_events,'holdings':holdings,'expert_opinions':state.get('expert_opinions',[]),'coordination':state.get('coordination'),'llm_usage':state.get('llm_usage',[])}
+    return {'id':r['id'],'name':r['name'],'status':r['status'],'config':cfg,'state':state,'metrics':metrics,'history':state.get('history',[]),'benchmark_history':benchmark_history,'benchmark_metrics':benchmark_metrics,'decisions':state.get('decisions',[]),'orders':state.get('orders',[]),'events':state_events+db_events,'holdings':holdings,'expert_opinions':state.get('expert_opinions',[]),'coordination':state.get('coordination'),'llm_usage':state.get('llm_usage',[]),'decision_traces':state.get('decision_traces',[])}
 
 @app.get('/api/health')
 def health():return {'status':'ok','mode':'paper trading only'}
@@ -444,6 +444,36 @@ def create_experiment(body:ExperimentIn):
 @app.get('/api/experiments/{experiment_id}')
 def get_experiment(experiment_id):return _decode_exp(_experiment(experiment_id))
 
+@app.get('/api/experiments/{experiment_id}/market')
+def experiment_market(experiment_id, as_of:str|None=None, symbol:str|None=None):
+    """Return the immutable experiment market snapshot through its replay cursor."""
+    r=_experiment(experiment_id); cfg=json.loads(r['config']); state=json.loads(r['state'])
+    current=state.get('current_date')
+    requested=current if as_of is None else as_of
+    if requested is not None:
+        try:
+            parsed=date.fromisoformat(requested)
+            if parsed.isoformat()!=requested: raise ValueError
+        except (TypeError,ValueError):
+            raise HTTPException(422,'as_of must use a valid ISO YYYY-MM-DD date')
+        if current is not None and requested>current:
+            raise HTTPException(422,'as_of cannot be later than the current replay date')
+    symbols=cfg.get('symbols',[])
+    if symbol is not None and symbol not in symbols:
+        raise HTTPException(422,'symbol must be one of the experiment symbols')
+    ds=_row('SELECT bars,checksum,synthetic FROM datasets WHERE id=?',(cfg.get('dataset_id'),))
+    if not ds:raise HTTPException(409,'Pinned dataset is missing')
+    if cfg.get('dataset_checksum') and ds['checksum']!=cfg['dataset_checksum']:
+        raise HTTPException(409,'Pinned dataset checksum does not match the experiment snapshot')
+    # Before the first replay step there is no point-in-time market snapshot,
+    # even if the caller asks for a date that lies inside the pinned range.
+    cutoff=min(x for x in (requested,current) if x is not None) if current is not None else None
+    visible=[]
+    if cutoff is not None and cutoff>=cfg['start_date']:
+        visible=[b for b in json.loads(ds['bars']) if cfg['start_date']<=b['date']<=cfg['end_date'] and b['date']<=cutoff and b['symbol'] in symbols and (symbol is None or b['symbol']==symbol)]
+    visible.sort(key=lambda b:(b['date'],b['symbol']))
+    return {'experiment_id':experiment_id,'as_of':requested,'current_date':current,'symbols':symbols,'bars':visible,'synthetic':bool(ds['synthetic']),'dataset_id':cfg['dataset_id']}
+
 def _record_error(eid, msg, live_state=None):
     r=_experiment(eid); state=live_state if live_state is not None else json.loads(r['state']); state['status']='paused'; state.setdefault('events',[]).append({'type':'error','message':msg}); _save_experiment(eid,r['name'],'paused',json.loads(r['config']),state); _event(eid,{'type':'error','message':msg})
 def _tool_definition(symbols, hold_contract=False):
@@ -456,6 +486,30 @@ def _tool_definition(symbols, hold_contract=False):
     return [{'type':'function','function':{'name':'submit_trade_proposal','description':description,'parameters':{'type':'object','properties':properties,'required':['action','targets','rationale'],'additionalProperties':False}}}]
 def _opinion_tool():
     return [{'type':'function','function':{'name':'submit_expert_opinion','description':'Return an evidence-based advisory opinion, not an order.','parameters':{'type':'object','properties':{'stance':{'type':'string','enum':['support','caution','oppose','neutral']},'rationale':{'type':'string'},'risks':{'type':'array','items':{'type':'string'}}},'required':['stance','rationale','risks'],'additionalProperties':False}}}]
+
+def _redact_public(value, cfg):
+    secrets=[_secret(),(cfg.get('settings_snapshot') or {}).get('base_url')]
+    def redact(item):
+        if isinstance(item,str):
+            for secret in secrets:
+                if isinstance(secret,str) and secret:item=item.replace(secret,'[redacted]')
+            return item
+        if isinstance(item,list):return [redact(x) for x in item]
+        if isinstance(item,dict):return {k:redact(v) for k,v in item.items()}
+        return item
+    return redact(value)
+
+def _public_input_context(snapshot, expert, role, team_context, cfg):
+    dates=sorted({b.get('date') for b in snapshot.get('bars',[]) if isinstance(b,dict) and b.get('date')})[-90:]
+    date_set=set(dates)
+    public_snapshot={k:v for k,v in snapshot.items() if k in ('as_of_date','current_date','symbols','positions','holdings','cash','equity','portfolio_value','history','bars','context_window_sessions')}
+    public_snapshot['bars']=[b for b in snapshot.get('bars',[]) if b.get('date') in date_set]
+    if isinstance(public_snapshot.get('history'),list):public_snapshot['history']=public_snapshot['history'][-90:]
+    public_snapshot['context_window_sessions']=90
+    public_expert={k:expert.get(k) for k in ('expert_id','id','name','version','strategy','description','objective','horizon','required_data','risk_notes','role') if k in expert}
+    context={'snapshot':public_snapshot,'expert_card':public_expert,'role':role,'team_context':team_context,'hard_constraints':{'max_position_weight':cfg.get('max_position_weight'),'symbols':cfg.get('symbols')}}
+    return _redact_public(context,cfg)
+
 async def _expert_call(cfg,state,expert,snapshot,role,context=None):
     import time
     settings=cfg['settings_snapshot']; usage=state.setdefault('llm_usage',[]); calls=int(state.get('llm_calls',0)); spend=sum(float(x.get('estimated_cost_usd') or 0) for x in usage)
@@ -475,16 +529,21 @@ async def _expert_call(cfg,state,expert,snapshot,role,context=None):
         reserve=(conservative_input_tokens*settings['input_cost_per_million']+512*settings['output_cost_per_million'])/1_000_000
         if spend+reserve>float(cfg['budget_usd']):raise RuntimeError('Remaining LLM budget is below the conservative per-call reservation')
     state['llm_calls']=calls+1; started=time.monotonic()
+    usage_entry={'expert_id':expert.get('expert_id',expert.get('id')),'expert_name':expert.get('name','Expert'),'role':role,'as_of_date':state.get('current_date'),'attempt_id':str(uuid.uuid4()),'step_attempt_id':state.get('_active_step_attempt_id'),'input_context':_public_input_context(snapshot,expert,role,context,cfg),'status':'running','estimated_cost_usd':None,'cost_basis':'unknown'}
+    usage.append(usage_entry)
     try:data=await _llm_request(messages,tool,settings=settings)
     except Exception as e:
-        state['llm_usage'].append({'expert_id':expert['id'],'role':role,'elapsed_seconds':round(time.monotonic()-started,3),'status':'failed','error':str(e),'estimated_cost_usd':None,'cost_basis':'unknown'})
+        usage_entry.update({'elapsed_seconds':round(time.monotonic()-started,3),'status':'failed','error':_redact_public(str(e),cfg)})
         raise
-    msg=data['choices'][0]['message']; toolcalls=msg.get('tool_calls') or []
+    try:
+        msg=data['choices'][0]['message']; toolcalls=msg.get('tool_calls') or []
+    except (KeyError,IndexError,TypeError,AttributeError) as e:
+        entry=usage_entry; entry.update({'elapsed_seconds':round(time.monotonic()-started,3),'status':'failed','error':'Malformed LLM response structure'})
+        raise RuntimeError('Malformed LLM response structure') from e
     tokens=data.get('usage') or {}; prompt=tokens.get('prompt_tokens'); completion=tokens.get('completion_tokens')
     if isinstance(prompt,bool) or not isinstance(prompt,int) or isinstance(completion,bool) or not isinstance(completion,int):prompt=None; completion=None; cost=None
     else:cost=None if settings.get('input_cost_per_million') is None or settings.get('output_cost_per_million') is None else (prompt*settings['input_cost_per_million']+completion*settings['output_cost_per_million'])/1_000_000
-    entry={'expert_id':expert['id'],'role':role,'model':data.get('model',settings['model']),'prompt_tokens':prompt,'completion_tokens':completion,'elapsed_seconds':round(time.monotonic()-started,3),'estimated_cost_usd':cost,'cost_basis':'unknown' if cost is None else 'configured token rates','status':'received','raw_output':msg}
-    usage.append(entry)
+    entry=usage_entry; entry.update({'model':data.get('model',settings['model']),'prompt_tokens':prompt,'completion_tokens':completion,'elapsed_seconds':round(time.monotonic()-started,3),'estimated_cost_usd':cost,'cost_basis':'unknown' if cost is None else 'configured token rates','status':'received','raw_output':_redact_public(msg,cfg)})
     if cost is None:entry['status']='usage_unavailable'; raise RuntimeError('LLM response omitted token usage; dollar budget cannot be verified')
     if cost>max(0.0,float(cfg['budget_usd'])-spend):entry['status']='budget_exceeded'; raise RuntimeError('LLM response exceeded remaining experiment budget')
     try:
@@ -557,15 +616,24 @@ async def _step_locked(eid):
             engine.advance_market(state,bars)
             state['needs_decision']=True
         if hasattr(engine,'prepare_decision'):engine.prepare_decision(state)
+        attempt_id=str(uuid.uuid4()); usage_start=len(state.setdefault('llm_usage',[]))
+        state['_active_step_attempt_id']=attempt_id
+        state['expert_opinions']=[]; state['coordination']=None
         p,_=await _proposal(cfg,state,bars)
         decision=engine.record_decision(state,p)
+        state.setdefault('decision_traces',[]).append({'as_of_date':state.get('current_date'),'attempt_id':attempt_id,'decision_id':decision.get('id'),'status':'succeeded','expert_opinions':_redact_public(state.get('expert_opinions',[]),cfg),'coordination':_redact_public(state.get('coordination'),cfg),'error':None,'usage_indices':list(range(usage_start,len(state.get('llm_usage',[]))))})
+        state.pop('_active_step_attempt_id',None)
         state['needs_decision']=False
         state['status']='awaiting_review' if cfg['mode']=='human_review' else ('completed' if state.get('status')=='completed' else 'ready')
         _save_experiment(eid,r['name'],state['status'],cfg,state); _event(eid,{'type':'decision_created','decision_id':decision.get('id'),'date':state.get('current_date'),'provider':p.get('provider')})
         return _decode_exp(_experiment(eid))
     except HTTPException:raise
     except Exception as e:
-        _record_error(eid,str(e),state); return _decode_exp(_experiment(eid))
+        active=state.pop('_active_step_attempt_id',None)
+        if active is not None:
+            message=_redact_public(str(e),cfg)
+            state.setdefault('decision_traces',[]).append({'as_of_date':state.get('current_date'),'attempt_id':active,'decision_id':None,'status':'failed','expert_opinions':_redact_public(state.get('expert_opinions',[]),cfg),'coordination':_redact_public(state.get('coordination'),cfg),'error':message,'usage_indices':list(range(usage_start,len(state.get('llm_usage',[]))))})
+        _record_error(eid,_redact_public(str(e),cfg),state); return _decode_exp(_experiment(eid))
 
 @app.post('/api/experiments/{experiment_id}/step')
 async def step(experiment_id):

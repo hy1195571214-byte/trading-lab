@@ -46,7 +46,35 @@ def test_seeded_demo_step_and_review_are_persisted(api):
     assert stepped['state']['current_date']
     assert stepped['decisions'][0]['original_proposal']['provider']=='deterministic_demo'
     assert len(stepped['expert_opinions'])==2
+    trace=stepped['decision_traces'][0]
+    assert trace['status']=='succeeded' and trace['decision_id']==stepped['decisions'][0]['id']
+    assert trace['as_of_date']==stepped['state']['current_date'] and trace['attempt_id']
+    assert trace['usage_indices']==[]
     assert api.get('/api/experiments').json()[0]['id']==created['id']
+
+
+def test_market_replay_is_pinned_capped_and_read_only(api):
+    created=api.post('/api/experiments',json=base_payload(api)).json(); eid=created['id']
+    before=api.get(f'/api/experiments/{eid}').json()
+    prestart=api.get(f'/api/experiments/{eid}/market?as_of=2020-01-01').json()
+    assert prestart['bars']==[] and prestart['current_date'] is None
+    prestart_future=api.get(f"/api/experiments/{eid}/market?as_of={created['config']['end_date']}").json()
+    assert prestart_future['bars']==[] and prestart_future['current_date'] is None
+    assert api.get(f'/api/experiments/{eid}/market?as_of=not-a-date').status_code==422
+    stepped=api.post(f'/api/experiments/{eid}/step').json(); current=stepped['state']['current_date']
+    future=api.get(f'/api/experiments/{eid}/market?as_of=2099-01-01')
+    assert future.status_code==422
+    response=api.get(f'/api/experiments/{eid}/market',params={'as_of':current})
+    assert response.status_code==200
+    market=response.json(); assert market['current_date']==current and market['as_of']==current
+    assert {b['symbol'] for b in market['bars']}==set(market['symbols'])
+    assert all(b['date']<=current for b in market['bars'])
+    selected=api.get(f'/api/experiments/{eid}/market',params={'as_of':current,'symbol':market['symbols'][0]}).json()
+    assert selected['symbols']==market['symbols'] and {b['symbol'] for b in selected['bars']}=={market['symbols'][0]}
+    invalid_symbol=api.get(f'/api/experiments/{eid}/market',params={'symbol':'NOPE'})
+    assert invalid_symbol.status_code==422
+    assert api.get(f'/api/experiments/{eid}').json()['state']==stepped['state']
+    assert before['state']['current_date'] is None
 
 
 def test_human_review_reject_requires_reason_and_does_not_fill(api):
@@ -325,6 +353,14 @@ def test_settings_secret_write_only_and_local_compatible_llm(api):
         assert detail['decisions'], detail
         assert detail['decisions'][0]['original_proposal']['rationale']=='Mock server response'
         assert detail['llm_usage'][0]['prompt_tokens']==120
+        usage=detail['llm_usage'][0]
+        assert usage['as_of_date']==detail['state']['current_date'] and usage['attempt_id'] and usage['expert_name']=='Momentum'
+        assert usage['input_context']['role']=='trader'
+        assert secret not in json.dumps(usage)
+        assert detail['decision_traces'][0]['usage_indices']==[0,1,2]
+        assert len({x['attempt_id'] for x in detail['llm_usage']})==3
+        assert {x['step_attempt_id'] for x in detail['llm_usage']}=={detail['decision_traces'][0]['attempt_id']}
+        assert detail['decision_traces'][0]['status']=='succeeded'
         assert len(detail['expert_opinions'])==2 and detail['expert_opinions'][1]['rationale']=='Mock adviser opinion'
         assert detail['coordination']['final_proposal']['rationale']=='Mock server response'
         assert detail['config']['settings_snapshot']['model']=='mock-model'
@@ -337,9 +373,15 @@ def test_settings_secret_write_only_and_local_compatible_llm(api):
         date_after_failure=failed['state']['current_date']
         assert failed['status']=='paused' and failed['state']['needs_decision'] is True
         assert failed['state']['llm_calls']==1 and failed['decisions']==[]
+        failed_trace=failed['decision_traces'][-1]
+        assert failed_trace['status']=='failed' and failed_trace['decision_id'] is None
+        assert failed_trace['usage_indices']==[0] and failed_trace['attempt_id']
         retry=api.post(f"/api/experiments/{limited['id']}/step").json()
         assert retry['state']['current_date']==date_after_failure
         assert retry['decisions']==[] and retry['status']=='paused'
+        assert len(retry['decision_traces'])==2
+        assert retry['decision_traces'][1]['status']=='failed'
+        assert retry['decision_traces'][0]['attempt_id']!=retry['decision_traces'][1]['attempt_id']
     finally:
         server.shutdown(); thread.join(timeout=2); server.server_close()
 
