@@ -85,30 +85,35 @@ export default function ReplayDesk({ detail, doStep, doRun, branch, decision, bu
   const pending = day === latest ? (detail.decisions || []).find((x: Any) => dateOf(x) === day && ["pending", "awaiting_review"].includes(x.status)) : null;
   const currentPending = (detail.decisions || []).find((x: Any) => ["pending", "awaiting_review"].includes(x.status));
 
+  const deterministic = detail.config?.strategy !== "agent" || detail.config?.provider_mode === "demo";
+  const strategyLabel = detail.config?.strategy !== "agent" ? "基准策略" : detail.config?.provider_mode === "demo" ? "演示策略" : "Agent 记录";
+  const statusLabel: Record<string, string> = { running: "运行中", completed: "已完成", paused: "已暂停", created: "待开始", failed: "已失败" };
   return <>
-    <section className="replay-console">
-      <div className="replay-title">
-        <div><span className="eyebrow">HISTORICAL PLAYBACK</span><h2>逐日回看</h2><p>回看记录 · 不调用模型 · 日期只覆盖实验已记录的交易日</p></div>
-        <span className="tag lime">{detail.config?.provider_mode === "demo" ? "确定性演示策略" : detail.config?.strategy !== "agent" ? "确定性基准策略" : "已记录的 Agent 实验"}</span>
-      </div>
+    <section className="replay-console" aria-label="历史回放控制">
       <div className="playback-controls">
-        <label className="symbol-picker">标的<select value={symbol} onChange={(e) => chooseSymbol(e.target.value)}>{(market?.symbols || detail.config?.symbols || [...new Set<string>((detail.history || []).flatMap((h: Any) => Object.keys(h.positions || {}))) ]).map((x: string) => <option key={x} value={x}>{x}</option>)}</select></label>
-        <div className="transport"><Btn disabled={dayIndex <= 0} onClick={() => { setPlaying(false); setDay(dates[dayIndex - 1]); }}>← 上一日</Btn><Btn kind="primary" disabled={!dates.length || (dayIndex >= dates.length - 1 && playing)} onClick={() => { if (playing) setPlaying(false); else { if (dayIndex >= dates.length - 1) setDay(dates[0]); setPlaying(true); } }}>{playing ? "暂停回放" : dayIndex >= dates.length - 1 ? "从头播放" : "播放回放"}</Btn><Btn disabled={dayIndex >= dates.length - 1} onClick={() => { setPlaying(false); setDay(dates[dayIndex + 1]); }}>下一日 →</Btn></div>
-        <label className="speed-picker">速度<select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}><option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
-        <span className="playback-date">{day || "暂无记录"} <small>{dates.length ? `${dayIndex + 1} / ${dates.length} 个交易日` : "尚无逐日记录"}</small></span>
+        <span className="replay-provenance" tabIndex={0} title="历史回放：仅浏览已记录交易日，不调用模型。演示与基准策略为确定性规则。" aria-label={`历史回放 · ${strategyLabel} · 仅浏览已记录交易日，不调用模型`}><span className="replay-live-dot"/>回放 · {strategyLabel}</span>
+        <label className="symbol-picker"><span className="visually-hidden">标的</span><select aria-label="选择回放标的" value={symbol} onChange={(e) => chooseSymbol(e.target.value)}>{(market?.symbols || detail.config?.symbols || [...new Set<string>((detail.history || []).flatMap((h: Any) => Object.keys(h.positions || {}))) ]).map((x: string) => <option key={x} value={x}>{x}</option>)}</select></label>
+        <div className="transport">
+          <Btn className="playback-icon" aria-label="上一交易日" data-tooltip="上一交易日" disabled={dayIndex <= 0} onClick={() => { setPlaying(false); setDay(dates[dayIndex - 1]); }}><ReplayIcon name="back"/></Btn>
+          <Btn className="playback-icon primary" aria-label={playing ? "暂停回放" : dayIndex >= dates.length - 1 ? "从头播放" : "播放回放"} data-tooltip={playing ? "暂停回放" : dayIndex >= dates.length - 1 ? "从头播放" : "播放回放"} disabled={!dates.length || (dayIndex >= dates.length - 1 && playing)} onClick={() => { if (playing) setPlaying(false); else { if (dayIndex >= dates.length - 1) setDay(dates[0]); setPlaying(true); } }}><ReplayIcon name={playing ? "pause" : "play"}/></Btn>
+          <Btn className="playback-icon" aria-label="下一交易日" data-tooltip="下一交易日" disabled={dayIndex >= dates.length - 1} onClick={() => { setPlaying(false); setDay(dates[dayIndex + 1]); }}><ReplayIcon name="forward"/></Btn>
+        </div>
+        <label className="speed-picker"><span className="visually-hidden">回放速度</span><select aria-label="回放速度" value={speed} onChange={(e) => setSpeed(Number(e.target.value))}><option value="0.5">0.5×</option><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+        <span className="playback-date">{day || "暂无记录"}<small>{dates.length ? `${dayIndex + 1} / ${dates.length} 个交易日` : "尚无逐日记录"}</small></span>
       </div>
-      <input className="date-slider" aria-label="选择回看交易日" type="range" min="0" max={Math.max(0, dates.length - 1)} value={dayIndex} disabled={dates.length < 2} onChange={(e) => { setPlaying(false); setDay(dates[Number(e.target.value)]); }} />
-      <div className="playback-boundary"><span>{dates[0] || "—"}</span><span>所选日期及之前的可见行情</span><span>{dates[dates.length - 1] || "—"}</span></div>
+      <div className="playback-timeline"><span>{dates[0] || "—"}</span><input className="date-slider" aria-label="选择回看交易日" type="range" min="0" max={Math.max(0, dates.length - 1)} value={dayIndex} disabled={dates.length < 2} onChange={(e) => { setPlaying(false); setDay(dates[Number(e.target.value)]); }} /><span>{dates[dates.length - 1] || "—"}</span></div>
+      <details className="run-actions">
+        <summary><span>实验控制</span><span className={deterministic ? "control-mode" : "control-mode warn-text"}>{detail.config?.provider_mode === "demo" ? "确定性演示 · 无模型调用" : detail.config?.strategy !== "agent" ? "确定性基准 · 无模型调用" : "推进实验会调用模型"}</span><span className="control-state">{statusLabel[detail.status] || detail.status || "状态未知"}</span></summary>
+        <div className="run-actions-content">
+          <div className="control-explanation"><b>实验控制</b><small>{deterministic ? "推进现有实验记录；此配置不会调用模型。" : "推进实验将调用模型；历史回看只浏览已保存内容，不会调用模型。"}</small></div>
+          <Btn disabled={busy || detail.status === "completed" || !!currentPending} onClick={() => doStep()}>{deterministic ? "推进一天（无模型调用）" : "推进一天（调用模型）"}</Btn>
+          <Btn disabled={busy || detail.status === "completed" || !!currentPending} onClick={() => doRun(detail.status === "running" ? "pause" : "run")}>{detail.status === "running" ? "暂停实验" : deterministic ? "运行实验（无模型调用）" : "运行实验（调用模型）"}</Btn>
+          <Btn onClick={branch}>创建监督分支</Btn>
+          {currentPending && <span className="tag warn">待人工审核 · 暂停推进</span>}
+          {!pending && <span className="tag">实验状态：{detail.status}</span>}
+        </div>
+      </details>
     </section>
-
-    <div className="run-actions">
-      <div><b>实验控制</b><small>{detail.config?.strategy !== "agent" || detail.config?.provider_mode === "demo" ? "推进现有实验记录；此配置不会调用模型" : "推进实验将调用模型；回看记录不会调用模型"}</small></div>
-      <Btn disabled={busy || detail.status === "completed" || !!currentPending} onClick={() => doStep()}>{detail.config?.strategy !== "agent" || detail.config?.provider_mode === "demo" ? "推进一天（无模型调用）" : "推进一天（调用模型）"}</Btn>
-      <Btn disabled={busy || detail.status === "completed" || !!currentPending} onClick={() => doRun(detail.status === "running" ? "pause" : "run")}>{detail.status === "running" ? "暂停实验" : detail.config?.strategy !== "agent" || detail.config?.provider_mode === "demo" ? "运行实验（无模型调用）" : "运行实验（调用模型）"}</Btn>
-      <Btn onClick={branch}>创建监督分支</Btn>
-      {currentPending && <span className="tag warn">待人工审核 · 暂停推进</span>}
-      {!pending && <span className="tag">实验状态：{detail.status}</span>}
-    </div>
 
     <div className="replay-layout">
       <Panel className="candle-panel" title={`${symbol || "标的"} · 日线 OHLC 与成交量`}>
@@ -169,6 +174,15 @@ function proposalSummary(proposal: Any) {
   if ((action === "rebalance" || action === "sell_all") && targets && !Object.keys(targets).length) return "目标为现金 100%，需要清空现有持仓。";
   const names: Record<string,string> = { buy: "买入建议", sell: "卖出建议", hold: "持有建议", rebalance: "调整目标仓位", reduce: "降低目标仓位", sell_all: "清空持仓" };
   return `${names[action] || "记录的交易建议"}${targets ? ` · 目标仓位 ${Object.entries(targets).map(([s,v]: any)=>`${s} ${pct(v)}`).join("、") || "现金 100%"}` : ""}。`;
+}
+function ReplayIcon({ name }: { name: "back" | "play" | "pause" | "forward" }) {
+  const paths: Record<string, React.ReactNode> = {
+    back: <><path d="M6 5v14"/><path d="m18 6-9 6 9 6z"/></>,
+    play: <path d="m8 5 11 7-11 7z"/>,
+    pause: <><path d="M8 5h3v14H8z"/><path d="M15 5h3v14h-3z"/></>,
+    forward: <><path d="M18 5v14"/><path d="m6 6 9 6-9 6z"/></>,
+  };
+  return <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">{paths[name]}</svg>;
 }
 function formatValue(value: any, limit?: number) { const text = typeof value === "string" ? value : JSON.stringify(value); return limit && text.length > limit ? `${text.slice(0,limit)}…` : text; }
 function modelOutput(usage: Any) {

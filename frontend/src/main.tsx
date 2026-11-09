@@ -31,6 +31,13 @@ const nav = [
 function App() {
   const auth = useContext(AuthContext);
   const initialQuery = new URLSearchParams(window.location.search);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem("trading-lab-sidebar-collapsed");
+      return saved == null ? window.matchMedia("(max-width: 800px)").matches : saved === "true";
+    }
+    catch { return false; }
+  });
   const [page, S] = useState(initialQuery.get("view") === "desk" ? "Trading desk" : "Overview"),
     [datasets, D] = useState<Any[]>([]),
     [experts, E] = useState<Any[]>([]),
@@ -81,6 +88,10 @@ function App() {
   useEffect(() => {
     reload();
   }, []);
+  useEffect(() => {
+    try { window.localStorage.setItem("trading-lab-sidebar-collapsed", String(sidebarCollapsed)); }
+    catch { /* Keep the preference for this visit when storage is unavailable. */ }
+  }, [sidebarCollapsed]);
   useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior }); }, [page]);
   useEffect(() => {
     let active = true;
@@ -161,18 +172,22 @@ function App() {
           ?.synthetic && <span className="pill">Synthetic dataset</span>}
         {auth.enabled && <button onClick={auth.logout}>Sign out</button>}
       </header>
-      <aside>
+      <aside className={sidebarCollapsed ? "sidebar-collapsed" : ""}>
+        <button className="sidebar-toggle" aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>
+          <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span><span className="sidebar-toggle-label">{sidebarCollapsed ? "展开" : "收起"}</span>
+        </button>
         {nav.map(([n, ic]) => (
           <button
             key={n}
             aria-label={n}
+            title={n}
             className={page === n ? "active" : ""}
             onClick={() => S(n)}
           >
             <span>
               <NavIcon name={ic} />
             </span>
-            {n}
+            <span className="nav-label">{n}</span>
           </button>
         ))}
         <div className="sidefoot">
@@ -182,7 +197,7 @@ function App() {
           Simulated capital only
         </div>
       </aside>
-      <main>
+      <main className={sidebarCollapsed ? "sidebar-collapsed" : ""}>
         {initialLoading && (
           <div className="notice">Loading saved workspace…</div>
         )}
