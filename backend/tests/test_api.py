@@ -54,6 +54,31 @@ def test_seeded_demo_step_and_review_are_persisted(api):
     assert api.get('/api/experiments').json()[0]['id']==created['id']
 
 
+def test_research_card_is_reviewable_but_blocked_at_all_team_entry_points(api):
+    # Even a draft claiming price-only requirements must not enter demo,
+    # coordinator, fusion, team-change or branch paths before validation.
+    draft={'name':'Source-backed draft','strategy':'value','description':'Research draft',
+           'objective':'Inspect evidence','horizon':'unspecified','required_data':['price'],
+           'instructions':'Draft policy','risk_notes':'Not validated','role':'trader',
+           'activation_status':'research_only','research':{'sources':[{'id':'s1','url':'https://example.org/source'}]}}
+    response=api.post('/api/experts',json=draft)
+    assert response.status_code==200
+    card=response.json()
+    assert api.get('/api/experts/'+card['id']).json()['research']==draft['research']
+    team=[{'expert_id':card['id'],'role':'trader','enabled':True}]
+    for override in ({},{'lab_mode':'market_agent'}):
+        response=api.post('/api/experiments',json=base_payload(api,team=team,**override))
+        assert response.status_code==422
+        assert 'research-only' in response.json()['detail']
+    parent=api.post('/api/experiments',json=base_payload(api)).json()
+    for path, body in (('team',{'team':team}),('branch',{'team':team})):
+        response=api.post(f"/api/experiments/{parent['id']}/{path}",json=body)
+        assert response.status_code==422
+        assert 'research-only' in response.json()['detail']
+    unchanged=api.get('/api/experiments/'+parent['id']).json()
+    assert unchanged['config']['expert_snapshots']==parent['config']['expert_snapshots']
+
+
 def test_daily_runner_defers_benchmark_and_matches_manual_steps(api, monkeypatch):
     import httpx
 

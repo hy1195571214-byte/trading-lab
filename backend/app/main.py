@@ -862,6 +862,12 @@ def expert(expert_id):
     if not r:raise HTTPException(404,'Expert not found')
     return json.loads(r['body'])
 
+def _check_expert_activation(expert):
+    # Evidence drafts may be reviewed in the library but must not enter a
+    # historical coordinator/fusion path that has not adopted system-only style.
+    if expert.get('activation_status') == 'research_only':
+        raise HTTPException(422, f"{expert['name']}: research-only card; evidence validation and the sole final trading LLM system-prompt path are required before activation")
+
 def _default_settings():
     return {'base_url':'','model':'','max_calls':100,'budget_usd':10.0,'input_cost_per_million':None,'output_cost_per_million':None}
 
@@ -1046,6 +1052,7 @@ def _config(body):
         r=_row('SELECT body FROM experts WHERE id=?',(item.get('expert_id'),))
         if not r:raise HTTPException(422,'Unknown expert in team')
         e=json.loads(r['body']); role=item.get('role',e.get('role','trader'))
+        _check_expert_activation(e)
         if not isinstance(role,str) or role.lower() not in ('trader','advisor','trading strategy','strategy'):raise HTTPException(422,'Each team role must be trader or advisor')
         if any(x not in ('price','ohlcv') for x in e.get('required_data',[])):raise HTTPException(422,f"{e['name']} requires unavailable data: {', '.join(e.get('required_data',[]))}")
         role='trader' if role.lower() in ('trader','trading strategy','strategy') else 'advisor'
@@ -1808,6 +1815,7 @@ async def change_team(experiment_id,body:dict):
             er=_row('SELECT body FROM experts WHERE id=?',(x.get('expert_id'),))
             if not er:raise HTTPException(422,'Unknown expert in team')
             ex=json.loads(er['body']); role=x.get('role',ex['role'])
+            if x.get('enabled',True):_check_expert_activation(ex)
             if not isinstance(role,str) or role.lower() not in ('trader','advisor','trading strategy','strategy'):raise HTTPException(422,'Each team role must be trader or advisor')
             if any(v not in ('price','ohlcv') for v in ex.get('required_data',[])):raise HTTPException(422,f"{ex['name']} requires unavailable data: {', '.join(ex.get('required_data',[]))}")
             role='trader' if role.lower() in ('trader','trading strategy','strategy') else 'advisor'

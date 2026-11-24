@@ -977,6 +977,7 @@ function Experts({ experts, add, create }: any) {
           <option value="momentum"><LText id="Trend"/></option>
           <option value="value"><LText id="Value"/></option>
           <option value="risk"><LText id="Risk"/></option>
+          <option value="macro">宏观与灵活交易 / Macro</option>
         </select>
         <Btn kind="primary" onClick={create}><LText id="Create expert"/></Btn>
       </div>
@@ -984,7 +985,7 @@ function Experts({ experts, add, create }: any) {
         {matches.map((ex: any) => (
           <Panel key={ex.id}>
             <ExpertBadge ex={ex} />
-            {ex.activation_status === "research_only" && <p className="error compact">研究草稿 / Research only · 可审阅来源，尚未验证或启用交易。</p>}
+            {ex.activation_status === "research_only" && <><p>{ex.style_label}</p><p className="error compact">研究草稿 / Research only · 可审阅来源，尚未验证或启用交易。</p></>}
             <DataRequirements items={ex.required_data} />
             {missingData(ex).length > 0 && <p className="error compact">{t("data.missing", { data: missingData(ex).map((field: string) => requirementLabel(field, t)).join(" / ") })}</p>}
             <div className="toolbar">
@@ -1022,6 +1023,7 @@ function Experts({ experts, add, create }: any) {
           <p>{selectedExpert.research.validation_status}</p>
           {(selectedExpert.research.principles || []).map((principle: Any) => <div key={principle.id}>
             <b>{principle.id} · {principle.statement}</b>
+            <p>{principle.attribution_scope} · {principle.classification} · {principle.runtime_candidate ? "拟用候选，未启用 / Candidate only" : "仅保留研究，不编入交易政策 / Research record only"}</p>
             <p>{principle.evidence_assessment}</p>
             <small>{(principle.source_ids || []).join(" · ")}</small>
           </div>)}
