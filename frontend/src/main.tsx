@@ -17,6 +17,7 @@ import {
   VolatilityValue,
 } from "./ui";
 import ActivityLog from "./ActivityLog";
+import ExpertProfile from "./ExpertProfile";
 import { conciseNumber } from "./presentationFormatting";
 import { Any, req, ApiError } from "./api";
 import { AuthContext, AuthGate } from "./AuthGate";
@@ -979,7 +980,7 @@ function Experts({ experts, add, create }: any) {
         {matches.map((ex: any) => (
           <Panel key={ex.id}>
             <ExpertBadge ex={ex} />
-            {ex.activation_status === "research_only" && <><p>{ex.style_label}</p><p className="error compact">研究草稿 / Research only · 可审阅来源，尚未验证或启用交易。</p></>}
+            {ex.activation_status === "research_only" && <><p>{ex.style_label}</p><p className="notice expert-availability">{t("expert.researchStatus")}</p></>}
             <DataRequirements items={ex.required_data} />
             {missingData(ex).length > 0 && <p className="error compact">{t("data.missing", { data: missingData(ex).map((field: string) => requirementLabel(field, t)).join(" / ") })}</p>}
             <div className="toolbar">
@@ -997,41 +998,7 @@ function Experts({ experts, add, create }: any) {
           <LText id="Advisors provide evidence and dissent. The execution engine accepts one final target plan. Missing required data must block or limit activation."/>
         </p>
       </Panel>
-      {selectedExpert && <div className="overlay"><div className="modal">
-        <button className="x" aria-label={t("Close dialog")} onClick={() => setSelectedExpert(null)}>×</button>
-        <h2>{selectedExpert.name} · v{selectedExpert.version || "1"}</h2>
-        <p>{t("原文 / Original")} · {selectedExpert.description || selectedExpert.objective}</p>
-        <p className="muted"><LText id="Saved expert profile text is shown in its original language."/></p>
-        <dl className="expert-details">
-          <dt><LText id="Strategy objective"/></dt><dd>{selectedExpert.objective || t("Not provided")}</dd>
-          <dt><LText id="Horizon"/></dt><dd>{selectedExpert.horizon || t("Not specified")}</dd>
-          <dt><LText id="Required data"/></dt><dd><DataRequirements items={requiredData(selectedExpert)} showLabel={false} /></dd>
-          <dt><LText id="Instructions"/></dt><dd>{selectedExpert.instructions || t("Not provided")}</dd>
-          <dt><LText id="Risk notes"/></dt><dd>{selectedExpert.risk_notes || t("Not provided")}</dd>
-        </dl>
-        {selectedExpert.research && <section>
-          <h3>来源与研究审查 / Sources and research review</h3>
-          <p>{selectedExpert.research.scope}</p>
-          <p>{selectedExpert.research.academic_use}</p>
-          <p>{selectedExpert.research.attribution_limit}</p>
-          <p>{selectedExpert.research.validation_status}</p>
-          {(selectedExpert.research.principles || []).map((principle: Any) => <div key={principle.id}>
-            <b>{principle.id} · {principle.statement}</b>
-            <p>{principle.attribution_scope} · {principle.classification} · {principle.runtime_candidate ? "拟用候选，未启用 / Candidate only" : "仅保留研究，不编入交易政策 / Research record only"}</p>
-            <p>{principle.evidence_assessment}</p>
-            <small>{(principle.source_ids || []).join(" · ")}</small>
-          </div>)}
-          <ul>{(selectedExpert.research.sources || []).map((source: Any) => <li key={source.id}>
-            <a href={/^https?:\/\//.test(source.url || "") ? source.url : undefined} target="_blank" rel="noreferrer">{source.id} · {source.title}</a>
-            <p>{source.locator || "定位详见本地证据档案"}</p>
-            {source.quote && <blockquote>{source.quote}</blockquote>}
-            <small>{source.published_at || "发表时间待核"} · {source.rights_note || "引用与数据分析；再分发许可须另审"}</small>
-          </li>)}</ul>
-          <p>缺口 / Gaps: {(selectedExpert.research.gaps || []).join("；")}</p>
-        </section>}
-        {missingData(selectedExpert).length > 0 && <p className="error compact">{t("data.missing", {data: missingData(selectedExpert).map((field: string) => requirementLabel(field, t)).join(" / ")})}</p>}
-        <Btn onClick={() => setSelectedExpert(null)}><LText id="Close details"/></Btn>
-      </div></div>}
+      {selectedExpert && <ExpertProfile expert={selectedExpert} close={() => setSelectedExpert(null)} />}
     </>
   );
 }

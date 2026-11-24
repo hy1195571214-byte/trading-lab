@@ -633,6 +633,32 @@ textarea:focus {
   margin: 0;
   white-space: pre-wrap;
 }
+.expert-availability {
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.modal.expert-profile {
+  width: min(820px, 100%);
+  max-height: calc(100dvh - 48px);
+  overflow-wrap: anywhere;
+}
+.expert-profile h2 { padding-right: 36px; }
+.expert-summary { line-height: 1.8; }
+.expert-policy ol { padding-left: 24px; }
+.expert-policy li { padding: 0 0 8px 6px; }
+.expert-policy h4 { margin: 14px 0 6px; font-size: 16px; }
+.expert-policy p { margin: 6px 0; line-height: 1.8; }
+.expert-disclosure { border-top: 1px solid #343832; margin: 18px 0; padding-top: 16px; }
+.expert-disclosure summary { cursor: pointer; line-height: 1.6; }
+.expert-disclosure details { margin: 12px 0; }
+.expert-prompt { white-space: pre-wrap; font: inherit; line-height: 1.8; background: #101210; border-radius: 8px; padding: 16px; }
+.expert-source-list li { margin: 18px 0; }
+@media (max-width: 600px) {
+  .expert-profile .expert-details { grid-template-columns: 1fr; gap: 6px; }
+  .expert-profile .expert-details dd { margin-bottom: 10px; }
+  .modal.expert-profile { padding: 20px; }
+}
 @media (max-width: 760px) {
   .team-edit-row {
     grid-template-columns: 1fr 1fr;
