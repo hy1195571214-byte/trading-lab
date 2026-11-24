@@ -60,6 +60,8 @@ _CONFIG_KEYS = {
     "team",
     "dataset_id",
     "provider_mode",
+    "workflow_version",
+    "harness_risk",
 }
 
 
@@ -342,12 +344,20 @@ def _fill_order_at_open(
     open_prices: dict[str, float],
     session_date: str,
 ) -> None:
-    target_weights = order["target_weights"]
+    from . import score_fusion
+    preserve=set(order.get('preserve_symbols',[]))
+    missing_marks=[s for s in preserve if state['positions'].get(s,{}).get('quantity',0)>_EPSILON and s not in day_bars]
+    if missing_marks:
+        order['pending_symbols']=sorted(missing_marks)
+        order['unfilled_symbols']={s:'preserved_position_missing_price' for s in missing_marks}
+        return
+    equity=_market_equity(state,open_prices)
+    target_weights = score_fusion.execution_targets(state,order['target_weights'],preserve,open_prices,equity)
     candidate_symbols = sorted(
         symbol
         for symbol in state["config"]["symbols"]
-        if target_weights.get(symbol, 0.0) > _EPSILON
-        or state["positions"].get(symbol, {}).get("quantity", 0.0) > _EPSILON
+        if symbol not in preserve and (target_weights.get(symbol, 0.0) > _EPSILON
+        or state["positions"].get(symbol, {}).get("quantity", 0.0) > _EPSILON)
     )
     processed = set(order.setdefault("processed_symbols", []))
     fills: list[dict[str, Any]] = []
@@ -409,6 +419,10 @@ def _fill_order_at_open(
     # cannot push any newly bought name over the hard per-position cap.
     base_equity = max(_market_equity(state, open_prices), 0.0)
     available_cash = max(state["cash"], 0.0)
+    if preserve:
+        limits=state['config'].get('harness_risk') or {}
+        reserve=max(limits.get('min_cash_weight',0.0),1-limits.get('max_gross_weight',1.0))
+        available_cash=max(0.0,available_cash-reserve*base_equity)
     buy_plans: list[dict[str, float | str]] = []
     for symbol in tradable:
         if symbol in order["processed_symbols"]:
@@ -538,6 +552,7 @@ def _fill_order_at_open(
     # Sell costs can leave a formerly capped holding marginally above the cap.
     # Correct tradable names at this same open; missing-bar breaches are logged.
     stale_logged: set[str] = set()
+    preserve_logged: set[str] = set()
     for _ in range(max(1, len(state["config"]["symbols"]) * 2)):
         equity_now = _market_equity(state, open_prices)
         violations: list[str] = []
@@ -547,7 +562,11 @@ def _fill_order_at_open(
             if mark is None or equity_now <= 0:
                 continue
             if position["quantity"] * mark / equity_now > max_weight + 1e-9:
-                if symbol in day_bars:
+                if symbol in preserve:
+                    if symbol not in preserve_logged:
+                        _event(state,'preserved_position_limit_exceeded',{'symbol':symbol,'max_position_weight':max_weight},event_date=session_date)
+                        preserve_logged.add(symbol)
+                elif symbol in day_bars:
                     violations.append(symbol)
                 else:
                     stale_violations.append(symbol)
@@ -859,6 +878,8 @@ def _normalize_targets(state: dict[str, Any], targets: Any) -> dict[str, float]:
 def _validate_proposal(state: dict[str, Any], proposal: Any) -> tuple[dict[str, Any], str, dict[str, float] | None]:
     if not isinstance(proposal, dict):
         raise _error("invalid_proposal", "Proposal must be an object.")
+    from .score_fusion import validated_preserve
+    validated_preserve(state,proposal)
     action = proposal.get("action")
     if action not in ("hold", "rebalance"):
         raise _error("invalid_proposal", "Proposal action must be hold or rebalance.")
@@ -889,6 +910,7 @@ def _queue_order(state: dict[str, Any], decision: dict[str, Any], targets: dict[
         "filled_date": None,
         "status": "pending_final_session" if final_session else "queued",
         "target_weights": copy.deepcopy(targets),
+        "preserve_symbols": copy.deepcopy(decision.get('final_proposal',{}).get('preserve_symbols',[])),
         "processed_symbols": [],
         "pending_symbols": [],
         "unfilled_symbols": {},
@@ -1092,6 +1114,7 @@ def _review_decision_mutating(
         decision["status"] = "approved"
         if action == "modify":
             modified = _safe_copy(decision["original_proposal"])
+            modified.pop('preserve_symbols',None)
             modified["action"] = "rebalance"
             modified["targets"] = copy.deepcopy(normalized_targets)
             decision["final_proposal"] = modified
@@ -1344,10 +1367,16 @@ def benchmark_report(state: dict[str, Any], bars: list[dict[str, Any]]) -> dict[
     benchmark_config["team"] = []
     benchmark_state = create_state(benchmark_config, visible_bars)
     for _ in _sessions(benchmark_state["config"], visible_bars):
-        advance_market(benchmark_state, visible_bars)
-        snapshot = visible_snapshot(benchmark_state, visible_bars)
+        # This replay owns its state and validated bars. Reuse the ledger
+        # mutations without copying the growing audit history every session.
+        _advance_market_mutating(benchmark_state, visible_bars)
+        snapshot = {
+            "as_of_date": benchmark_state["current_date"],
+            "bars": [bar for bar in visible_bars if bar["date"] == benchmark_state["current_date"]],
+        }
         proposal = baseline_proposal(benchmark_state, snapshot, "buy_hold")
-        record_decision(benchmark_state, proposal)
+        _record_decision_mutating(benchmark_state, proposal)
+    _ensure_json_state(benchmark_state)
     metrics = performance_metrics(benchmark_state)
     metrics.pop("equity_curve", None)
     pending_orders = [

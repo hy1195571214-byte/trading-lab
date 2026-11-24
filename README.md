@@ -19,7 +19,16 @@ Requires Python 3.11+ and Node.js 22+. From this folder:
 
 Open http://127.0.0.1:5173. API documentation: http://127.0.0.1:8000/docs. Ctrl+C stops both servers. The development launcher reads an optional `.env` and reloads backend source changes.
 
-Dependencies are cached inside `work/`, without changing system settings. If installation cannot connect because an inherited proxy is stopped, restore that proxy or run the setup command with its proxy environment variables removed for that command only. Do not commit `.env`, SQLite files or private keys.
+On this Mac, runtime dependencies and data live in `~/Library/Application Support/Trading Lab/`. The launcher always uses local SQLite, including when a shell inherits `DATABASE_URL` or production gateway settings. Keep the project folder downloaded in Finder when its source is stored in iCloud Drive.
+
+- Database — `trading_lab.sqlite3` inside that local storage directory.
+- Research files — `datasets/research_3y/`, including original market, news and financial snapshots.
+- Private model credentials — `secrets.json`, with owner-only permissions when configured.
+- Python environment — `.venv/`. Frontend packages live in `frontend-dependencies/node_modules/`, linked from the project.
+
+On 2026-11-17 the existing local database and research files were copied to this directory. Cloud business records were merged into the local database, with a cloud snapshot and pre-merge backup under `backups/`. The workspace contains 6 datasets, 9 experiments and 118,318 indexed evidence records. Existing local expert cards take precedence for matching card IDs, and cloud originals are retained in the snapshot. Cloud provider credentials require separate explicit authorization to copy. Set a local API key through Settings for real-model calls.
+
+Set `TRADING_LAB_LOCAL_DIR` before setup and launch to choose another local storage directory. If installation cannot connect because an inherited proxy is stopped, restore that proxy or run the setup command with its proxy environment variables removed for that command only. Keep private configuration and databases outside source control.
 
 ## First workflow
 
@@ -33,7 +42,7 @@ Dependencies are cached inside `work/`, without changing system settings. If ins
 
 The provider/model are deliberately configurable. In Settings, supply a compatible chat-completions base URL, model, write-only API key and token prices, then test the connection. An API key may also be provided as `TRADING_LAB_API_KEY`. The endpoint is expected to support function/tool calls.
 
-An Agent experiment obtains independent expert opinions and a final coordinated target portfolio. Only the execution engine changes the ledger. Failed/invalid model responses pause the run and retain the current snapshot for retry; the app never silently substitutes a demo result. Call and dollar budgets are configured explicitly. No live paid-provider validation has been claimed; controlled local compatible-endpoint tests verify the integration.
+An Agent experiment obtains independent expert opinions and a final coordinated target portfolio. Only the execution engine changes the ledger. Failed/invalid model responses retain their audit records; the app never silently substitutes a demo result. Call and dollar budgets are configured explicitly. A real DeepSeek daily-history acceptance run was completed on 2026-11-09; see `outputs/deepseek-validation/REPORT.md`. That small sample verifies integration, not profitable trading or a human-oversight benefit. Real-provider minute/forward operation and Alpaca account connectivity remain unverified. Local regression tests use controlled compatible endpoints and synthetic data without paid calls.
 
 ## Data & evaluation limits
 
@@ -49,7 +58,7 @@ An Agent experiment obtains independent expert opinions and a final coordinated 
 - UI and interaction contract: `outputs/UI_FUNCTIONAL_SPEC.md`
 - Implementation/API contract: `docs/IMPLEMENTATION_CONTRACT.md`
 - Verification ledger: `docs/ACCEPTANCE.md`
+- Local audit fixes and regression evidence (2026-11-10): `docs/AUDIT_FIXES_ACCEPTANCE.md`
 - Backend details and tests: `backend/README.md`
 
-Run backend and engine checks with `.venv/bin/python -m pytest backend/tests backend/app/engine_tests -q`; build the frontend with `npm --prefix frontend run build`.
-
+Run backend and engine checks with `"$HOME/Library/Application Support/Trading Lab/.venv/bin/python" -m pytest backend/tests backend/app/engine_tests -q`. Run frontend regressions with `npm --prefix frontend test` and build with `npm --prefix frontend run build`.

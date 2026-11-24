@@ -12,6 +12,8 @@ uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 
 The API is at `http://127.0.0.1:8000/api`; interactive docs are at `/docs`. SQLite defaults to `backend/trading_lab.sqlite3`; set `TRADING_LAB_DB` to choose another path. The first launch seeds synthetic OHLCV and Momentum, Value, and Risk expert cards.
 
+For daily development, use `./scripts/dev.sh` from the project root. It starts both services with the migrated database at `~/Library/Application Support/Trading Lab/trading_lab.sqlite3` and selects local secret files in the same directory. The launcher clears inherited cloud database and gateway configuration. The direct Uvicorn command above continues to use the backend's environment-driven paths.
+
 ## LLM configuration
 
 Configure `base_url` and `model` using `PUT /api/settings`. Submit `api_key` to that endpoint to store it in the ignored project-local `backend/data/secrets.json` file with mode 0600, or set `TRADING_LAB_API_KEY` in the backend process environment. GET settings never returns the credential. `POST /api/settings/test` sends a real minimal chat completion. For an experiment, choose `provider_mode: "llm"`; it uses the OpenAI-compatible `/chat/completions` endpoint, requests structured tool calls for each expert and a coordinator, then validates one final proposal. Invalid output, endpoint failures, max-call exhaustion, and estimated-budget exhaustion pause the run and remain visible. It never switches to demo mode.

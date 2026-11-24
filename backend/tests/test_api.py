@@ -1,5 +1,6 @@
 import csv
 import asyncio
+import copy
 import io
 import json
 import stat
@@ -51,6 +52,45 @@ def test_seeded_demo_step_and_review_are_persisted(api):
     assert trace['as_of_date']==stepped['state']['current_date'] and trace['attempt_id']
     assert trace['usage_indices']==[]
     assert api.get('/api/experiments').json()[0]['id']==created['id']
+
+
+def test_daily_runner_defers_benchmark_and_matches_manual_steps(api, monkeypatch):
+    import httpx
+
+    payload = base_payload(api, end_date='2023-01-10', strategy='buy_hold', team=[])
+    manual = api.post('/api/experiments', json=payload).json()
+    result = manual
+    while result['status'] != 'completed':
+        result = api.post(f"/api/experiments/{manual['id']}/step").json()
+
+    automatic = api.post('/api/experiments', json=payload).json()
+    eid = automatic['id']
+    calls = []
+    original = main.engine.benchmark_report
+    main._benchmark_cache.clear()
+
+    def benchmark(state, bars):
+        calls.append(state['current_date'])
+        return original(state, bars)
+
+    monkeypatch.setattr(main.engine, 'benchmark_report', benchmark)
+
+    async def run_to_completion():
+        transport = httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport, base_url='http://test') as client:
+            response = await client.post(f'/api/experiments/{eid}/run')
+            assert response.status_code == 200
+            await asyncio.wait_for(main._tasks[eid], 10)
+
+    asyncio.run(run_to_completion())
+    assert calls == []
+    completed = api.get(f'/api/experiments/{eid}').json()
+    assert completed['status'] == 'completed'
+    assert calls == ['2023-01-10']
+    assert completed['benchmark_history']
+    assert completed['metrics'] == result['metrics']
+    assert completed['state']['positions'] == result['state']['positions']
+    assert completed['state']['cash'] == result['state']['cash']
 
 
 def test_market_replay_is_pinned_capped_and_read_only(api):
@@ -150,7 +190,7 @@ def test_rejecting_later_proposal_preserves_earlier_approved_order(api):
 def test_run_pause_and_review_mutations_are_serialized(api, monkeypatch):
     import httpx
     started=asyncio.Event(); release=asyncio.Event()
-    async def slow_proposal(cfg,state,bars):
+    async def slow_proposal(cfg,state,bars,*,experiment_id=None):
         started.set(); await release.wait()
         snap=main.engine.visible_snapshot(state,bars)
         return main.engine.baseline_proposal(state,snap,'momentum'),None
@@ -196,6 +236,190 @@ def test_run_preserves_awaiting_review_and_completed_states(api):
     again=api.post(f"/api/experiments/{completed['id']}/run").json()
     assert again['status']=='completed'
     assert completed['id'] not in main._tasks
+
+
+def test_compare_includes_effective_team_changes(api):
+    left=api.post('/api/experiments',json=base_payload(api,name='team-left')).json()
+    right=api.post('/api/experiments',json=base_payload(api,name='team-right')).json()
+    for experiment in (left,right):
+        response=api.post(f"/api/experiments/{experiment['id']}/step")
+        assert response.status_code==200
+    scheduled=api.post(f"/api/experiments/{right['id']}/team",json={
+        'team':[{'expert_id':'momentum','role':'trader','enabled':True}],
+        'pending_policy':'keep',
+    })
+    assert scheduled.status_code==200
+    for experiment in (left,right):
+        response=api.post(f"/api/experiments/{experiment['id']}/step")
+        assert response.status_code==200
+    result=api.get('/api/compare',params={'ids':f"{left['id']},{right['id']}"}).json()
+    assert result['comparable'] is False
+    assert 'team_trajectory' in result['differences']
+    assert result['experiments'][0]['config']['expert_snapshots']==result['experiments'][1]['config']['expert_snapshots']
+    assert result['experiments'][0]['team_trajectory']['effective']!=result['experiments'][1]['team_trajectory']['effective']
+
+
+def test_compare_ignores_per_run_decision_ids_for_same_team_trajectory(api):
+    left=api.post('/api/experiments',json=base_payload(api,name='same-team-left')).json()
+    right=api.post('/api/experiments',json=base_payload(api,name='same-team-right')).json()
+    for experiment in (left,right):
+        assert api.post(f"/api/experiments/{experiment['id']}/step").status_code==200
+        scheduled=api.post(f"/api/experiments/{experiment['id']}/team",json={
+            'team':[{'expert_id':'momentum','role':'trader','enabled':True}],
+            'pending_policy':'keep',
+        })
+        assert scheduled.status_code==200
+        assert api.post(f"/api/experiments/{experiment['id']}/step").status_code==200
+    right_row=main._experiment(right['id']); right_state=json.loads(right_row['state'])
+    right_state['decisions'][-1]['id']='decision-different-run-uuid'
+    main._save_experiment(right['id'],right_row['name'],right_row['status'],json.loads(right_row['config']),right_state)
+    result=api.get('/api/compare',params={'ids':f"{left['id']},{right['id']}"}).json()
+    assert result['comparable'] is True
+    assert 'team_trajectory' not in result['differences']
+    assert result['experiments'][0]['team_trajectory']['effective'][-1]['decision_id']!=result['experiments'][1]['team_trajectory']['effective'][-1]['decision_id']
+
+
+def test_final_state_save_merges_checkpointed_llm_audit_rows(api):
+    created=api.post('/api/experiments',json=base_payload(api,name='checkpoint-merge')).json()
+    eid=created['id']; stale_state=copy.deepcopy(created['state']); row=main._experiment(eid)
+    checkpoint=json.loads(row['state'])
+    checkpoint['llm_calls']=2
+    checkpoint['llm_usage']=[{'attempt_id':'checkpoint-only','status':'interrupted','reserved_cost_usd':0.25,'billing_status':'unknown'}]
+    checkpoint['decision_traces']=[{'attempt_id':'step-checkpoint-only','status':'interrupted','usage_indices':[0]}]
+    with main._db_lock,main._connect() as connection:
+        connection.execute('UPDATE experiments SET state=? WHERE id=?',(json.dumps(checkpoint),eid))
+    main._save_experiment(eid,row['name'],'paused',json.loads(row['config']),stale_state)
+    detail=api.get(f'/api/experiments/{eid}').json()
+    assert detail['state']['llm_calls']==2
+    assert detail['llm_usage'][0]['attempt_id']=='checkpoint-only'
+    assert detail['llm_usage'][0]['reserved_cost_usd']==0.25
+    assert detail['decision_traces'][0]['attempt_id']=='step-checkpoint-only'
+
+
+def test_intraday_llm_attempts_survive_coordinator_interruption_and_explicit_retry(api,monkeypatch):
+    import httpx
+    settings=api.put('/api/settings',json={'base_url':'http://mock.invalid/v1','model':'offline-mock',
+        'api_key':'test-only-secret','input_cost_per_million':1.0,'output_cost_per_million':2.0})
+    assert settings.status_code==200
+    dataset=api.post('/api/market/demo',json={'symbols':['DEMO-A'],'timeframe':'1Min','days':1,'bars_per_day':8}).json()
+    body={'name':'checkpoint-resume','dataset_id':dataset['id'],'start_date':dataset['start_date'],'end_date':dataset['end_date'],
+          'start_at':dataset['range']['start'],'end_at':dataset['range']['end'],'initial_capital':10000,
+          'fee_bps':1,'slippage_bps':2,'max_position_weight':0.5,'mode':'ai_only','strategy':'agent',
+          'team':[{'expert_id':'momentum','role':'trader','enabled':True}],'provider_mode':'llm',
+          'schema_version':2,'market_mode':'historical','bar_interval':'1m','decision_interval':'1m',
+          'holding_horizon':'60m','latency_assumptions':{'simulated_latency_ms':0},'max_calls':10,'budget_usd':5.0}
+    created=api.post('/api/experiments',json=body)
+    assert created.status_code==200,created.text
+    eid=created.json()['id']; calls=[]
+
+    async def interrupt_during_coordinator(messages,tools=None,settings=None,**kwargs):
+        row=main._experiment(eid); persisted=json.loads(row['state'])
+        calls.append([x['status'] for x in persisted.get('llm_usage',[])])
+        assert row['status']=='running'
+        assert persisted.get('decision_in_flight')
+        if len(calls)==2:
+            assert calls[-1]==['succeeded','in_flight']
+            raise asyncio.CancelledError('simulated service interruption after trader response')
+        function=tools[0]['function']['name']
+        args={'action':'rebalance','targets':{'DEMO-A':0.25},'rationale':'mocked offline proposal','risks':[]}
+        return {'model':'offline-mock','choices':[{'message':{'tool_calls':[{'function':{'name':function,'arguments':json.dumps(args)}}]}}],
+                'usage':{'prompt_tokens':100,'completion_tokens':20}}
+
+    monkeypatch.setattr(main,'_llm_request',interrupt_during_coordinator)
+    with pytest.raises(asyncio.CancelledError):asyncio.run(main._step_intraday_locked(eid))
+    before=json.loads(main._experiment(eid)['state'])
+    decision_id=before['decision_in_flight']['id']
+    assert before['status']=='running' and before['decisions']==[] and before['orders']==[]
+    assert [x['status'] for x in before['llm_usage']]==['succeeded','in_flight']
+    assert before['llm_usage'][1]['reserved_cost_usd']>0
+
+    main._init()
+    recovered=main._decode_exp(main._experiment(eid))
+    assert recovered['status']=='paused'
+    assert [x['status'] for x in recovered['llm_usage']]==['succeeded','interrupted']
+    assert recovered['llm_usage'][1]['billing_status']=='unknown'
+    assert recovered['llm_usage'][1]['reserved_cost_usd']>0
+    assert recovered['state']['decision_in_flight']['id']==decision_id
+    assert recovered['decision_traces'][-1]['status']=='interrupted'
+    assert recovered['decision_traces'][-1]['decision_id']==decision_id
+
+    async def successful_retry(messages,tools=None,settings=None,**kwargs):
+        function=tools[0]['function']['name']
+        args={'action':'rebalance','targets':{'DEMO-A':0.25},'rationale':'recovered mock proposal','risks':[]}
+        return {'model':'offline-mock','choices':[{'message':{'tool_calls':[{'function':{'name':function,'arguments':json.dumps(args)}}]}}],
+                'usage':{'prompt_tokens':100,'completion_tokens':20}}
+    monkeypatch.setattr(main,'_llm_request',successful_retry)
+    original_step=main._step_locked
+    async def one_retry_boundary_then_pause(experiment_id, **kwargs):
+        detail=await original_step(experiment_id, **kwargs)
+        row=main._experiment(experiment_id); state=json.loads(row['state']); state['status']='paused'
+        main._save_experiment(experiment_id,row['name'],'paused',json.loads(row['config']),state)
+        return main._decode_exp(main._experiment(experiment_id))
+    monkeypatch.setattr(main,'_step_locked',one_retry_boundary_then_pause)
+    async def retry_via_run_endpoint():
+        transport=httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport,base_url='http://test') as client:
+            response=await client.post(f'/api/experiments/{eid}/run')
+            assert response.status_code==200
+            await asyncio.wait_for(main._tasks[eid],2)
+    asyncio.run(retry_via_run_endpoint())
+    detail=api.get(f'/api/experiments/{eid}').json()
+    assert detail['status']=='paused'
+    assert len(detail['decisions'])==1 and detail['decisions'][0]['id']==decision_id
+    assert len(detail['orders'])==1
+    assert [x['status'] for x in detail['llm_usage']]==['succeeded','interrupted','succeeded','succeeded']
+
+
+def test_intraday_runner_stops_on_proposal_failure_and_run_retries_same_decision(api,monkeypatch):
+    import httpx
+    dataset=api.post('/api/market/demo',json={'symbols':['DEMO-A'],'timeframe':'1Min','days':1,'bars_per_day':8}).json()
+    body={'name':'runner-proposal-retry','dataset_id':dataset['id'],'start_date':dataset['start_date'],'end_date':dataset['end_date'],
+          'start_at':dataset['range']['start'],'end_at':dataset['range']['end'],'initial_capital':10000,
+          'fee_bps':1,'slippage_bps':2,'max_position_weight':0.5,'mode':'ai_only','strategy':'agent',
+          'team':[{'expert_id':'momentum','role':'trader','enabled':True}],'provider_mode':'demo',
+          'schema_version':2,'market_mode':'historical','bar_interval':'1m','decision_interval':'60m',
+          'holding_horizon':'60m','latency_assumptions':{'simulated_latency_ms':0}}
+    created=api.post('/api/experiments',json=body)
+    assert created.status_code==200,created.text
+    eid=created.json()['id']; calls=[]
+
+    async def fail_once_then_propose(cfg,state,*,experiment_id=None):
+        calls.append(experiment_id)
+        if len(calls)==1:
+            raise RuntimeError('deterministic proposal failure')
+        from app import intraday_engine
+        snapshot=intraday_engine.visible_snapshot(state)
+        return intraday_engine.baseline_proposal(state,snapshot,'momentum')
+
+    monkeypatch.setattr(main,'_proposal_intraday',fail_once_then_propose)
+
+    async def scenario():
+        transport=httpx.ASGITransport(app=main.app)
+        async with httpx.AsyncClient(transport=transport,base_url='http://test') as client:
+            started=await client.post(f'/api/experiments/{eid}/run')
+            assert started.status_code==200
+            await asyncio.wait_for(main._tasks[eid],3)
+            failed=(await client.get(f'/api/experiments/{eid}')).json()
+            assert failed['status']=='failed'
+            assert failed['state']['decision_in_flight']
+            decision_id=failed['state']['decision_in_flight']['id']
+            assert failed['decisions']==[] and failed['orders']==[]
+            assert len(failed['decision_traces'])==1
+            assert failed['decision_traces'][0]['status']=='failed'
+            assert failed['decision_traces'][0]['decision_id']==decision_id
+
+            retried=await client.post(f'/api/experiments/{eid}/run')
+            assert retried.status_code==200
+            await asyncio.wait_for(main._tasks[eid],3)
+            final=(await client.get(f'/api/experiments/{eid}')).json()
+            assert final['status']=='completed'
+            assert len(final['decisions'])==1 and final['decisions'][0]['id']==decision_id
+            assert len(final['orders'])==1
+            assert [trace['status'] for trace in final['decision_traces']]==['failed','succeeded']
+            assert [trace['decision_id'] for trace in final['decision_traces']]==[decision_id,decision_id]
+            assert calls==[eid,eid]
+
+    asyncio.run(scenario())
 
 
 def test_import_rejects_nonfinite_ohlcv(api):
@@ -244,6 +468,15 @@ def test_workspace_auth_origin_gate_cookie_and_logout(api, monkeypatch):
     assert api.get('/api/auth/status',headers=headers).json()['authenticated'] is True
     assert api.post('/api/auth/logout',headers=headers).status_code==200
     assert api.get('/api/datasets',headers=headers).status_code==401
+
+
+def test_health_identifies_deployed_source_without_exposing_credentials(api, monkeypatch):
+    monkeypatch.setenv('RENDER_GIT_COMMIT', 'a' * 40)
+    monkeypatch.setenv('TRADING_LAB_API_KEY', 'private-health-check-credential')
+    response = api.get('/api/health')
+    assert response.status_code == 200
+    assert response.json()['source_revision'] == 'a' * 40
+    assert 'private-health-check-credential' not in response.text
 
 
 def test_failed_experiment_restart_recovery_is_audited(api):

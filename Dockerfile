@@ -9,4 +9,3 @@ RUN useradd --create-home --uid 10001 trading && chown -R trading:trading /app
 USER trading
 EXPOSE 8000
 CMD ["sh", "-c", "exec uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --proxy-headers --forwarded-allow-ips='*'"]
-

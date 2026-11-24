@@ -74,4 +74,3 @@ The current public workspace opens without signing in. The following describes p
 At original deployment verification, the owner was left signed in in the app browser and other devices needed the shared workspace password. Password-free public access now supersedes that requirement. Render Free can take roughly a minute to wake after inactivity. A chosen LLM provider is still unconfigured; current acceptance records use clearly labelled synthetic/demo strategies and do not represent investment results or real-model validation.
 
 For frontend-only/source-documentation changes, `[skip render]` in the Git commit message avoids an unnecessary backend rebuild. Rebuild the frontend before running `scripts/cloudflare.sh deploy`; deploy the updated backend normally for actual backend source changes. Secrets stay in the providers' runtime configuration and must never be committed.
-

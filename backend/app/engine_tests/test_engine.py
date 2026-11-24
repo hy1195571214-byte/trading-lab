@@ -1,6 +1,9 @@
 import json
 import math
 import unittest
+from unittest.mock import patch
+
+from backend.app import engine as engine_module
 
 from backend.app.engine import (
     EngineError,
@@ -439,6 +442,35 @@ class EngineRuntimeTests(unittest.TestCase):
         self.assertFalse(report["available"])
         self.assertIsNone(report["metrics"])
         self.assertEqual(report["history"], [])
+
+    def test_benchmark_matches_public_replay_without_revalidating_each_session(self):
+        bars = [
+            bar(day, symbol, 100 + day, 101 + day)
+            for day in range(1, 16)
+            for symbol in ("AAA", "BBB")
+            if (day, symbol) not in ((2, "BBB"), (5, "AAA"))
+        ]
+        state = create_state(
+            config(symbols=["AAA", "BBB"], fee_bps=10, slippage_bps=5, max_position_weight=0.45),
+            bars,
+        )
+        for _ in range(14):
+            advance_market(state, bars)
+        original = json.dumps(state, sort_keys=True)
+        visible = [item for item in bars if item["date"] <= state["current_date"]]
+        reference = create_state({**state["config"], "mode": "ai_only", "team": []}, visible)
+        for _ in sorted({item["date"] for item in visible}):
+            advance_market(reference, visible)
+            proposal = baseline_proposal(reference, visible_snapshot(reference, visible), "buy_hold")
+            record_decision(reference, proposal)
+        with patch.object(engine_module, "_checked_bars", wraps=engine_module._checked_bars) as checked:
+            report = benchmark_report(state, bars)
+        self.assertEqual(checked.call_count, 1)
+        self.assertEqual(report["history"], reference["history"])
+        expected_metrics = performance_metrics(reference)
+        expected_metrics.pop("equity_curve")
+        self.assertEqual(report["metrics"], expected_metrics)
+        self.assertEqual(json.dumps(state, sort_keys=True), original)
 
     def test_invalid_model_proposal_is_atomic(self):
         bars = [bar(1), bar(2)]

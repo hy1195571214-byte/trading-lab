@@ -1,0 +1,20 @@
+/* Keep long collections local while allowing short collections to size naturally. */
+.scroll-region {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #596153 transparent;
+}
+.scroll-region--bounded { max-height: min(32rem, 52vh); }
+.scroll-region--vertical { overscroll-behavior-y: contain; }
+.scroll-region:focus-visible { outline: 2px solid #d6ee3e; outline-offset: 2px; }
+.scroll-region > table { width: 100%; }
+.scroll-region table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #171917;
+}
+.scroll-region .expertgrid { margin: 0; }
+.scroll-region table { overflow-wrap: anywhere; }

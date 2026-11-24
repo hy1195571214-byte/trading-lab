@@ -22,4 +22,3 @@ services:
         sync: false
       - key: TRADING_LAB_ENCRYPTION_KEY
         sync: false
-

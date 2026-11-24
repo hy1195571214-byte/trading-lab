@@ -1,5 +1,18 @@
+import { LText, useLocale } from "./i18n";
 import React from "react";
+import { ApiError } from "./api";
+export function ErrorMessage({ error }: { error: unknown }) {
+  const { t } = useLocale();
+  if (error instanceof ApiError) {
+    if (!error.detail) return <>{t("Request failed ({status})", {status: error.status ?? "—"})}</>;
+    const translated = t(error.detail);
+    return <>{translated !== error.detail && <>{translated} · </>}{t("Server response (original)")} · {error.detail}</>;
+  }
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return <>{t(message)}</>;
+}
 export function Btn({ children, onClick, kind = "", disabled = false, ...props }: any) {
+  const { t } = useLocale();
   return (
     <button type="button" className={kind} onClick={onClick} disabled={disabled} {...props}>
       {children}
@@ -7,6 +20,7 @@ export function Btn({ children, onClick, kind = "", disabled = false, ...props }
   );
 }
 export function Panel({ title, children, className = "" }: any) {
+  const { t } = useLocale();
   return (
     <section className={"panel " + className}>
       {title && <h3>{title}</h3>}
@@ -15,9 +29,11 @@ export function Panel({ title, children, className = "" }: any) {
   );
 }
 export function Empty({ children }: any) {
+  const { t } = useLocale();
   return <div className="empty">{children}</div>;
 }
 export function NavIcon({ name }: { name: string }) {
+  const { t } = useLocale();
   const paths: Record<string, string> = {
     Overview: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
     Experiments:
@@ -41,6 +57,7 @@ export function NavIcon({ name }: { name: string }) {
   );
 }
 export function FlaskIcon() {
+  const { t } = useLocale();
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M9 3h6M10 3v7l-5 9a1 1 0 0 0 1 2h12a1 1 0 0 0 1-2l-5-9V3M8 15h8" />
@@ -48,35 +65,37 @@ export function FlaskIcon() {
   );
 }
 export function KPIs({ detail }: any) {
+  const { t } = useLocale();
   const m = detail?.metrics || {};
   return (
     <div className="kpis">
       <div className="kpi">
-        <label>Portfolio value</label>
+        <label><LText id="Portfolio value"/></label>
         <b>{m.portfolio_value != null ? money(m.portfolio_value) : "—"}</b>
         <small>
-          {detail ? "Current replay value" : "Select an experiment"}
+          {detail ? t("Current replay value") : t("Select an experiment")}
         </small>
       </div>
       <div className="kpi">
-        <label>Total return</label>
+        <label><LText id="Total return"/></label>
         <b className={m.total_return < 0 ? "red" : "green"}>{pct(m.total_return)}</b>
-        <small>Since experiment start</small>
+        <small><LText id="Since experiment start"/></small>
       </div>
       <div className="kpi">
-        <label>Max drawdown</label>
+        <label><LText id="Max drawdown"/></label>
         <b className="red">{pct(m.max_drawdown)}</b>
-        <small>Peak to trough</small>
+        <small><LText id="Peak to trough"/></small>
       </div>
       <div className="kpi">
-        <label>Cash available</label>
+        <label><LText id="Cash available"/></label>
         <b>{money(detail?.state?.cash)}</b>
-        <small>Simulated cash</small>
+        <small><LText id="Simulated cash"/></small>
       </div>
     </div>
   );
 }
 export function Chart({ history = [], benchmark = [] }: any) {
+  const { t } = useLocale();
   const valuesFor = (rows: any[]) =>
     (rows || [])
       .map((x: any) => Number(x.equity ?? x.value ?? x.portfolio_value))
@@ -105,9 +124,9 @@ export function Chart({ history = [], benchmark = [] }: any) {
   return (
     <div className="chart">
       <div className="chartlegend">
-        <span>● Portfolio</span>
+        <span><LText id="● Portfolio"/></span>
         {benchmark?.length > 0 && (
-          <span className="muted">● Buy &amp; hold benchmark</span>
+          <span className="muted"><LText id="● Buy &amp; hold benchmark"/></span>
         )}
       </div>
       <svg viewBox="0 0 700 240" preserveAspectRatio="none">
@@ -131,8 +150,8 @@ export function Chart({ history = [], benchmark = [] }: any) {
         )}
       </svg>
       <div className="axis">
-        {history?.[0]?.date || "Awaiting history"}{" "}
-        <span>{history?.at(-1)?.date || "No replay yet"}</span>
+        {history?.[0]?.timestamp || history?.[0]?.bar_end || history?.[0]?.date || t("Awaiting history")}{" "}
+        <span>{history?.at(-1)?.timestamp || history?.at(-1)?.bar_end || history?.at(-1)?.date || t("No replay yet")}</span>
       </div>
     </div>
   );

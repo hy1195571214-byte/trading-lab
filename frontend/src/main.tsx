@@ -1,4 +1,5 @@
-import React, { useContext, useEffect, useState } from "react";
+import { LText, useLocale, LocaleProvider, LanguageSwitch, enumLabel } from "./i18n";
+import React, { useContext, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./style.css";
 import {
@@ -11,10 +12,15 @@ import {
   pct,
   NavIcon,
   FlaskIcon,
+  ErrorMessage,
 } from "./ui";
-import { Any, req } from "./api";
+import { Any, req, ApiError } from "./api";
 import { AuthContext, AuthGate } from "./AuthGate";
 import ReplayDesk from "./ReplayDesk";
+import HarnessPanel from "./frontendHarnessPanel";
+import { ScrollRegion } from "./ScrollRegion";
+import { responseMatchesSelection } from "./replayData";
+import { ModeSettings, AnalysisPanel, InterventionHistory, useAnalysis, defaultWeights, fractionalWeights, validWeights, LabMode, Weights } from "./FourMode";
 
 const nav = [
   ["Overview", "Overview"],
@@ -27,8 +33,10 @@ const nav = [
   ["Activity", "Activity"],
   ["Data hub", "Data hub"],
   ["Settings", "Settings"],
+  ["harness", "Experiments"],
 ];
 function App() {
+  const { t } = useLocale();
   const auth = useContext(AuthContext);
   const initialQuery = new URLSearchParams(window.location.search);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -49,8 +57,8 @@ function App() {
     [settings, T] = useState<Any>({}),
     [busy, B] = useState(false),
     [initialLoading, IL] = useState(true),
-    [err, Z] = useState(""),
-    [notice, N] = useState(""),
+    [err, Z] = useState<Error | string>(""),
+    [notice, setNotice] = useState<{key: string; params?: Record<string, string | number>}>({key: ""}),
     [modal, M] = useState(""),
     [wizard, W] = useState(1),
     [compare, C] = useState<string[]>([]),
@@ -59,6 +67,9 @@ function App() {
     [pendingExpert, PE] = useState<Any | null>(null),
     [teamPolicy, TP] = useState<string | null>(null),
     [teamAdd, TA] = useState<Any | null>(null);
+  const N = (key: string, params?: Record<string, string | number>) => setNotice({key, params});
+  const selectedIdRef = useRef(sel);
+  const chooseSelection = (id: string) => { selectedIdRef.current = id; Q(id); };
   const reload = async () => {
     try {
       let [ds, ex, rs, rv, ac, st] = await Promise.all([
@@ -76,13 +87,13 @@ function App() {
       A(ac);
       T(st);
       IL(false);
-      if (!sel && rs[0]) {
-        Q(rs[0].id);
+      if (!selectedIdRef.current && rs[0]) {
+        chooseSelection(rs[0].id);
         localStorage.setItem("trading-lab-selected", rs[0].id);
       }
     } catch (e: any) {
       IL(false);
-      Z(e.message);
+      Z(e);
     }
   };
   useEffect(() => {
@@ -94,55 +105,67 @@ function App() {
   }, [sidebarCollapsed]);
   useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior }); }, [page]);
   useEffect(() => {
+    const requestedId = sel;
     let active = true;
-    if (sel) {
+    if (requestedId) {
       X(null);
       req(`/experiments/${sel}`)
-        .then((data) => { if (active) X(data); })
-        .catch((e: any) => { if (active) Z(e.message); });
+        .then((data) => { if (active && responseMatchesSelection(requestedId, selectedIdRef.current, data)) X(data); })
+        .catch((e: any) => { if (active && selectedIdRef.current === requestedId) Z(e); });
     } else X(null);
     return () => { active = false; };
   }, [sel]);
   useEffect(() => {
     if (!sel || detail?.status !== "running") return;
-    const timer = setInterval(
-      () =>
-        req(`/experiments/${sel}`)
-          .then((d) => {
-            X(d);
-            R((old) => old.map((r) => (r.id === d.id ? { ...r, ...d } : r)));
-            if (d.status !== "running") reload();
-          })
-          .catch((e: any) => Z(e.message)),
-      1800,
-    );
-    return () => clearInterval(timer);
+    const requestedId = sel;
+    let active = true;
+    let inFlight = false;
+    const poll = () => {
+      if (inFlight) return;
+      inFlight = true;
+      req(`/experiments/${requestedId}`)
+        .then((d) => {
+          if (!active || !responseMatchesSelection(requestedId, selectedIdRef.current, d)) return;
+          X(d);
+          R((old) => old.map((r) => (r.id === d.id ? { ...r, ...d } : r)));
+          if (d.status !== "running") reload();
+        })
+        .catch((e: any) => { if (active && selectedIdRef.current === requestedId) Z(e); })
+        .finally(() => { inFlight = false; });
+    };
+    const timer = setInterval(poll, 1800);
+    return () => { active = false; clearInterval(timer); };
   }, [sel, detail?.status]);
-  const action = async (f: () => Promise<any>, message = "Saved") => {
+  const action = async (f: () => Promise<any>, message = "Saved", expectedResponseId?: string) => {
+    const selectionAtStart = selectedIdRef.current;
     B(true);
     Z("");
     N("");
     try {
       const out = await f();
       if (out?.id && out?.config) {
-        Q(out.id);
-        localStorage.setItem("trading-lab-selected", out.id);
-        X(out);
+        if (selectedIdRef.current === selectionAtStart && (!expectedResponseId || out.id === expectedResponseId)) {
+          chooseSelection(out.id);
+          localStorage.setItem("trading-lab-selected", out.id);
+          X(out);
+        }
       }
       await reload();
-      N(message);
+      if (selectedIdRef.current === selectionAtStart) N(message);
       return out;
     } catch (e: any) {
-      Z(e.message);
+      if (selectedIdRef.current === selectionAtStart) Z(e);
       return null;
     } finally {
       B(false);
     }
   };
   const expConfig = detail?.config || {};
+  const selectedDetail = detail?.id === sel ? detail : null;
+  const hasSelectedDetail = () => Boolean(sel && selectedIdRef.current === sel && detail?.id === sel);
   const title = page === "Trading desk" ? "Trading workspace" : page;
   const selectExp = (id: string) => {
-    Q(id);
+    chooseSelection(id);
     localStorage.setItem("trading-lab-selected", id);
   };
   return (
@@ -155,60 +178,65 @@ function App() {
         <div className="toplinks">
           {["Overview", "Experiments", "Expert library", "Reports"].map((x) => (
             <button key={x} className={page === x ? "active" : ""} onClick={() => S(x)}>
-              {x}
+              {t(x)}
             </button>
           ))}
         </div>
-        <span className="pill lime">● Historical replay</span>
+        <span className="pill lime"><LText id="● Historical replay"/></span>
         <span className="pill">
           ●{" "}
-          {expConfig.strategy && expConfig.strategy !== "agent"
-            ? `Baseline · ${expConfig.strategy}`
+          {expConfig.lab_mode === "quant_baseline" ? `${t("Baseline")} · ${enumLabel(t, expConfig.quant_strategy)}` : expConfig.strategy && expConfig.strategy !== "agent"
+            ? `${t("Baseline")} · ${enumLabel(t, expConfig.strategy)}`
             : expConfig.provider_mode === "llm"
-              ? "LLM provider"
-              : "Deterministic agent demo"}
+              ? t("LLM provider")
+              : t("Deterministic agent demo")}
         </span>
         {!!datasets.find((d: Any) => d.id === expConfig.dataset_id)
-          ?.synthetic && <span className="pill">Synthetic dataset</span>}
-        {auth.enabled && <button onClick={auth.logout}>Sign out</button>}
+          ?.synthetic && <span className="pill"><LText id="Synthetic dataset"/></span>}
+        <LanguageSwitch />
+        {auth.enabled && <button onClick={auth.logout}><LText id="Sign out"/></button>}
       </header>
       <aside className={sidebarCollapsed ? "sidebar-collapsed" : ""}>
-        <button className="sidebar-toggle" aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"} aria-expanded={!sidebarCollapsed} title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>
-          <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span><span className="sidebar-toggle-label">{sidebarCollapsed ? "展开" : "收起"}</span>
+        <button className="sidebar-toggle" aria-label={t(sidebarCollapsed ? "展开侧边栏" : "收起侧边栏")} aria-expanded={!sidebarCollapsed} title={t(sidebarCollapsed ? "展开侧边栏" : "收起侧边栏")} onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}>
+          <span aria-hidden="true">{sidebarCollapsed ? "›" : "‹"}</span><span className="sidebar-toggle-label">{t(sidebarCollapsed ? "展开" : "收起")}</span>
         </button>
         {nav.map(([n, ic]) => (
           <button
             key={n}
-            aria-label={n}
-            title={n}
+            aria-label={t(n)}
+            title={t(n)}
             className={page === n ? "active" : ""}
             onClick={() => S(n)}
           >
             <span>
               <NavIcon name={ic} />
             </span>
-            <span className="nav-label">{n}</span>
+            <span className="nav-label">{t(n)}</span>
           </button>
         ))}
-        <div className="sidefoot">
-          RESEARCH WORKSPACE
-          <br />
-          <br />
-          Simulated capital only
-        </div>
+        <div className="sidefoot"><LText id="RESEARCH WORKSPACE"/><br />
+          <br /><LText id="Simulated capital only"/></div>
       </aside>
       <main className={sidebarCollapsed ? "sidebar-collapsed" : ""}>
         {initialLoading && (
-          <div className="notice">Loading saved workspace…</div>
+          <div className="notice"><LText id="Loading saved workspace…"/></div>
         )}
-        <div className="heading">
+        {page === "Trading desk" ? (
+          <div className="desk-context">
+            <h1 className="visually-hidden">{t("Trading workspace")}</h1>
+            {selectedDetail && (
+              <>
+                <span>{t("Experiment")}</span>
+                <strong title={selectedDetail.name}>{selectedDetail.name}</strong>
+                <span>· {enumLabel(t, selectedDetail.config?.lab_mode || selectedDetail.config?.mode)}</span>
+                {selectedDetail.config?.dataset_synthetic && <span>· {t("Synthetic dataset")}</span>}
+              </>
+            )}
+          </div>
+        ) : <div className="heading">
           <div>
-            <h1>{title}</h1>
-            <div className="sub">
-              {page === "Trading desk" && detail
-                ? `${detail.id} / ${detail.name} · Decisions use visible history only`
-                : desc(page)}
-            </div>
+            <h1>{t(title)}</h1>
+            <div className="sub">{t(desc(page))}</div>
           </div>
           <div className="heading-actions">
             {page === "Experiments" && (
@@ -218,31 +246,27 @@ function App() {
                   W(1);
                   M("wizard");
                 }}
-              >
-                ＋ New experiment
-              </button>
+              ><LText id="＋ New experiment"/></button>
             )}
           </div>
-        </div>
+        </div>}
         {err && (
-          <div className="error">
-            {err}
+          <div className="error" role="alert">
+            <span>{t("Error")} · </span><ErrorMessage error={err} />
             <button
               onClick={() => {
                 Z("");
                 reload();
               }}
-            >
-              Retry
-            </button>
+            ><LText id="Retry"/></button>
           </div>
         )}
-        {notice && <div className="notice">{notice}</div>}
-        {busy && <div className="notice">Saving changes…</div>}
+        {notice.key && <div className="notice">{t(notice.key, notice.params)}</div>}
+        {busy && <div className="notice"><LText id="Saving changes…"/></div>}
         {page === "Overview" && (
           <Overview
             runs={runs}
-            detail={detail}
+            detail={selectedDetail}
             go={S}
             open={() => S("Trading desk")}
             select={selectExp}
@@ -268,10 +292,11 @@ function App() {
         )}
         {page === "Trading desk" && (
           <Desk
-            detail={detail}
+            detail={selectedDetail}
+            selectedId={sel}
             experts={experts}
             go={S}
-            decision={(d: any, act: string) => review(d, act)}
+            decision={(d: any, act: string) => review({ ...d, experiment_id: d?.experiment_id || selectedDetail?.id, experiment_name: d?.experiment_name || selectedDetail?.name, selection_id_at_open: selectedIdRef.current }, act)}
             doStep={doStep}
             doRun={doRun}
             busy={busy}
@@ -298,7 +323,7 @@ function App() {
             }}
           />
         )}
-        {page === "Portfolio" && <Portfolio detail={detail} />}
+        {page === "Portfolio" && <Portfolio detail={selectedDetail} />}
         {page === "Reports" && (
           <Reports
             runs={runs}
@@ -310,12 +335,14 @@ function App() {
           />
         )}
         {page === "Activity" && <Activity items={activity} />}
-        {page === "Data hub" && <DataHub datasets={datasets} upload={upload} />}
+        {page === "Data hub" && <DataHub datasets={datasets} upload={upload} onImported={reload} />}
+        {page === "harness" && <HarnessPanel />}
         {page === "Settings" && (
           <Settings
             settings={settings}
             save={saveSettings}
             test={testSettings}
+            refresh={reload}
           />
         )}
       </main>
@@ -355,24 +382,24 @@ function App() {
           }}
         />
       )}
-      {modal === "team-editor" && detail && (
+      {modal === "team-editor" && selectedDetail && (
         <TeamEditor
-          team={teamAdd && !(detail.state?.pending_team?.team || detail.state?.active_team || expConfig.team || []).some((t: Any) => (t.expert_id || t.id) === teamAdd.id) ? (detail.state?.pending_team?.team || detail.state?.active_team || expConfig.team || []).concat({
+          team={teamAdd && !(selectedDetail.state?.pending_team?.team || selectedDetail.state?.active_team || selectedDetail.config?.team || []).some((t: Any) => (t.expert_id || t.id) === teamAdd.id) ? (selectedDetail.state?.pending_team?.team || selectedDetail.state?.active_team || selectedDetail.config?.team || []).concat({
             expert_id: teamAdd.id,
             role: String(teamAdd.role || "trader").toLowerCase(),
             enabled: true,
-          }) : (detail.state?.pending_team?.team || detail.state?.active_team || expConfig.team || []).map((t: Any) => ({ ...t, expert_id: t.expert_id || t.id }))}
+          }) : (selectedDetail.state?.pending_team?.team || selectedDetail.state?.active_team || selectedDetail.config?.team || []).map((t: Any) => ({ ...t, expert_id: t.expert_id || t.id }))}
           experts={experts}
-          dataset={datasets.find((d: Any) => d.id === expConfig.dataset_id)}
+          dataset={datasets.find((d: Any) => d.id === selectedDetail.config?.dataset_id)}
           pendingPolicy={teamPolicy}
-          hasPending={(detail.decisions || []).some((d: Any) =>
+          hasPending={(selectedDetail.decisions || []).some((d: Any) =>
             ["pending", "awaiting_review"].includes(d.status),
           )}
           close={() => { M(""); TP(null); TA(null); PE(null); }}
           save={saveTeam}
         />
       )}
-      {modal === "branch" && detail && (
+      {modal === "branch" && selectedDetail && (
         <BranchModal
           detail={detail}
           close={() => M("")}
@@ -382,32 +409,43 @@ function App() {
     </>
   );
   async function doStep() {
-    if (!sel) return;
+    if (!hasSelectedDetail()) { Z("Wait for the selected experiment to finish loading before advancing it."); return; }
     const out = await action(
       () => req(`/experiments/${sel}/step`, { method: "POST" }),
       "Session advanced",
+      sel,
     );
-    if (out?.status === "paused") {
+    if ((out?.status === "paused" || out?.status === "failed") && selectedIdRef.current === sel) {
       const errorEvent = [...(out.events || [])]
         .reverse()
         .find((event: Any) => event.type === "error");
-      Z(
-        errorEvent?.message ||
-          "The replay paused. Inspect the audit event, then retry from this saved snapshot.",
-      );
+      const failedTrace = [...(out.decision_traces || [])].reverse().find((trace: Any) => trace.status === "failed");
+      const failure = errorEvent?.message || failedTrace?.error;
+      Z(failure ? new ApiError(failure) : "The replay paused. Inspect the audit event, then retry from this saved snapshot.");
       N("");
     }
   }
-  function doRun(mode = "run") {
-    if (sel)
-      action(
+  async function doRun(mode = "run") {
+    if (!hasSelectedDetail()) { Z("Wait for the selected experiment to finish loading before changing its run state."); return; }
+    if (sel) {
+      const out = await action(
         () => req(`/experiments/${sel}/${mode}`, { method: "POST" }),
         mode === "pause" ? "Run paused" : "Run started",
+        sel,
       );
+      if (out?.status === "failed" && selectedIdRef.current === sel) {
+        const errorEvent = [...(out.events || [])].reverse().find((event: Any) => event.type === "error");
+        const failedTrace = [...(out.decision_traces || [])].reverse().find((trace: Any) => trace.status === "failed");
+        const failure = errorEvent?.message || failedTrace?.error;
+        Z(failure ? new ApiError(failure) : "The replay failed. Inspect the saved audit record before retrying.");
+        N("");
+      }
+    }
   }
   function openTeamEditor(add?: Any) {
-    if (expConfig.strategy && expConfig.strategy !== "agent") {
-      N("Expert cards do not run in a deterministic baseline experiment.");
+    if (!hasSelectedDetail()) { Z("Wait for the selected experiment to finish loading before editing its team."); return; }
+    if (expConfig.lab_mode || (expConfig.strategy && expConfig.strategy !== "agent")) {
+      N(expConfig.lab_mode ? "four.expertNotUsed" : "Expert cards do not run in a deterministic baseline experiment.");
       return;
     }
     if (!sel) {
@@ -425,6 +463,7 @@ function App() {
     } else M("team-editor");
   }
   async function saveTeam(team: Any[], policy?: string) {
+    if (!hasSelectedDetail()) { Z("The selected experiment changed. Reopen its team editor before saving."); return; }
     const out = await action(
       () => req(`/experiments/${sel}/team`, {
         method: "POST",
@@ -432,6 +471,7 @@ function App() {
         body: JSON.stringify({ team, pending_policy: policy || "keep" }),
       }),
       "Team change scheduled for next decision boundary",
+      sel,
     );
     if (out) { M(""); TP(null); TA(null); PE(null); }
   }
@@ -444,14 +484,24 @@ function App() {
     const d = decision?.decision_id || decision?.id;
     const runId = decision?.experiment_id || sel;
     if (!runId || !d) return;
+    if (decision?.selection_id_at_open && selectedIdRef.current !== decision.selection_id_at_open) {
+      Z("The selected experiment changed while this review was open. Reopen the decision before submitting.");
+      return;
+    }
+    if (decision?.experiment_id ? decision.experiment_id !== runId : detail?.id !== runId) {
+      Z("The displayed decision no longer matches its experiment. Reopen the correct experiment before reviewing.");
+      return;
+    }
     if ((act === "modify" || act === "reject") && !reason) {
-      let context = decision;
+      const selectionAtOpen = selectedIdRef.current;
+      let context = { ...decision, experiment_id: runId, experiment_name: decision?.experiment_name || runs.find((run: Any) => run.id === runId)?.name, selection_id_at_open: selectionAtOpen };
       if (act === "modify" && !context?.config?.symbols) {
         try {
           const experiment = await req(`/experiments/${runId}`);
+          if (experiment?.id !== runId || selectedIdRef.current !== selectionAtOpen) throw new Error("The selected experiment changed while loading review limits. Reopen the decision.");
           context = { ...context, config: experiment.config };
         } catch (e: any) {
-          Z(`Could not load experiment limits for review: ${e.message}`);
+          Z(e);
           return;
         }
       }
@@ -472,6 +522,7 @@ function App() {
           }),
         }),
       "Review recorded",
+      runId,
     );
     if (out) {
       PR(null);
@@ -479,8 +530,8 @@ function App() {
     }
   }
   async function assign(ex: Any, policy?: string) {
-    if (expConfig.strategy && expConfig.strategy !== "agent") {
-      N("Expert cards do not run in a deterministic baseline experiment.");
+    if (expConfig.lab_mode || (expConfig.strategy && expConfig.strategy !== "agent")) {
+      N(expConfig.lab_mode ? "four.expertNotUsed" : "Expert cards do not run in a deterministic baseline experiment.");
       return;
     }
     if (
@@ -488,9 +539,7 @@ function App() {
         /fundamental|financial/i.test(d),
       )
     ) {
-      N(
-        `${ex.name} requires fundamental data that is not available in this dataset.`,
-      );
+      N("{expert} requires fundamental data that is not available in this dataset.", {expert:ex.name});
       return;
     }
     if (!sel) {
@@ -500,12 +549,13 @@ function App() {
     openTeamEditor(ex);
   }
   async function createBranch(mode: string) {
+    if (!hasSelectedDetail()) { Z("Wait for the selected experiment to finish loading before creating a branch."); return; }
     const out = await action(
       () =>
         req(`/experiments/${sel}/branch`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode }),
+          body: JSON.stringify(expConfig.lab_mode === "multisource_agent" ? { name: `${detail?.name || "Research run"} · Human oversight`, lab_mode: "human_supervised", mode: "human_review", harness_version: "research-v1", fusion_weights: expConfig.fusion_weights, score_policy: expConfig.score_policy, strategy: "agent" } : { mode }),
         }),
       "Configuration branch created",
     );
@@ -524,7 +574,7 @@ function App() {
     try {
       CD(await req(`/compare?ids=${compare.join(",")}`));
     } catch (e: any) {
-      Z(e.message);
+      Z(e);
     } finally {
       B(false);
     }
@@ -588,7 +638,7 @@ function App() {
       if (!response.ok) {
         if (response.status === 401) window.dispatchEvent(new Event("trading-lab-auth-expired"));
         const error = await response.json().catch(() => ({}));
-        throw new Error(error.detail || `Export failed (${response.status})`);
+        throw new ApiError(error.detail || "", response.status);
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -626,11 +676,12 @@ function desc(p: string) {
   );
 }
 function Overview({ runs, detail, go, open, select, loading, refresh, create }: any) {
+  const { t } = useLocale();
   return (
     <>
       <KPIs detail={detail} />
       <div className="grid2">
-        <Panel title="Performance at a glance">
+        <Panel title={t("Performance at a glance")}>
           <Chart
             history={detail?.history}
             benchmark={detail?.benchmark_history}
@@ -640,43 +691,43 @@ function Overview({ runs, detail, go, open, select, loading, refresh, create }: 
             {detail?.metrics?.sharpe == null
               ? "—"
               : Number(detail.metrics.sharpe).toFixed(2)}
-            　 Trades {detail?.orders?.length || 0}　 Exposure{" "}
+            　 {t("Trades")} {detail?.orders?.length || 0}　 {t("Exposure")}{" "}
             {pct(detail?.metrics?.exposure)}
           </div>
         </Panel>
-        <Panel title="Continue your work">
+        <Panel title={t("Continue your work")}>
           <div className="tag warn">
-            {detail?.status || "No experiment selected"}
+            {detail?.status ? enumLabel(t, detail.status) : t("No experiment selected")}
           </div>
-          <h2>{detail?.name || "Start an experiment"}</h2>
+          <h2>{detail?.name || t("Start an experiment")}</h2>
           <p>
             {detail
-              ? `Replay status: ${detail.status}. View server-recorded decisions and continue the replay.`
-              : "Create an experiment to see its real state here."}
+              ? t("Replay status: {status}. View server-recorded decisions and continue the replay.", {status: enumLabel(t, detail.status)})
+              : t("Create an experiment to see its real state here.")}
           </p>
-          <Btn kind="primary" onClick={open}>
-            Open trading desk
-          </Btn>
-          <Btn onClick={() => go("Review queue")}>Review queue</Btn>
+          <Btn kind="primary" onClick={open}><LText id="Open trading desk"/></Btn>
+          <Btn onClick={() => go("Review queue")}><LText id="Review queue"/></Btn>
         </Panel>
       </div>
-      <Panel title="Recent experiments">
-        <div className="toolbar end"><Btn onClick={refresh} disabled={loading}>Refresh</Btn></div>
-        {loading ? <Empty>Loading saved experiments…</Empty> : runs?.length ? <RunTable runs={runs} select={select} /> : <Empty>No experiments found. <Btn kind="primary" onClick={create}>Create an experiment</Btn></Empty>}
+      <Panel title={t("Recent experiments")}>
+        <div className="toolbar end"><Btn onClick={refresh} disabled={loading}><LText id="Refresh"/></Btn></div>
+        {loading ? <Empty><LText id="Loading saved experiments…"/></Empty> : runs?.length ? <RunTable runs={runs} select={select} /> : <Empty><LText id="No experiments found."/> <Btn kind="primary" onClick={create}><LText id="Create an experiment"/></Btn></Empty>}
       </Panel>
     </>
   );
 }
 function RunTable({ runs, select }: any) {
+  const { t } = useLocale();
   return runs?.length ? (
-    <table>
+    <ScrollRegion label={t("Recent experiments")}>
+<table>
       <thead>
         <tr>
-          <th>Experiment</th>
-          <th>Mode</th>
-          <th>Status</th>
-          <th>Return</th>
-          <th>Dataset</th>
+          <th><LText id="Experiment"/></th>
+          <th><LText id="Mode"/></th>
+          <th><LText id="Status"/></th>
+          <th><LText id="Return"/></th>
+          <th><LText id="Dataset"/></th>
           <th></th>
         </tr>
       </thead>
@@ -684,48 +735,51 @@ function RunTable({ runs, select }: any) {
         {runs.map((r: any) => (
           <tr key={r.id}>
             <td>{r.name}</td>
-            <td>{r.mode || r.config?.mode || "—"}</td>
+            <td>{enumLabel(t, r.mode || r.config?.mode)}</td>
             <td>
-              <span className="tag">{r.status}</span>
+              <span className="tag">{enumLabel(t, r.status)}</span>
             </td>
             <td>{pct(r.total_return)}</td>
             <td>{r.dataset_id || "—"}</td>
             <td>
-              <Btn onClick={() => select(r.id)}>Open</Btn>
+              <Btn onClick={() => select(r.id)}><LText id="Open"/></Btn>
             </td>
           </tr>
         ))}
       </tbody>
     </table>
+</ScrollRegion>
   ) : (
-    <Empty>No experiments have been created.</Empty>
+    <Empty><LText id="No experiments have been created."/></Empty>
   );
 }
 function Experiments({ runs, compare, C, select, start }: any) {
+  const { t } = useLocale();
   return (
     <>
-      <Panel title="Experiment registry">
+      <Panel title={t("Experiment registry")}>
         <div className="toolbar">
-          <span>Compare compatible experiment snapshots</span>
+          <span><LText id="Compare compatible experiment snapshots"/></span>
           <Btn
             kind="primary"
             onClick={() =>
               C(compare.length ? [] : runs.slice(0, 2).map((x: any) => x.id))
             }
           >
-            Compare selected ({compare.length})
+            {t("Compare selected ({count})", {count: compare.length})}
           </Btn>
         </div>
         {runs?.length ? (
-          <table>
+          <ScrollRegion label={t("Experiment registry")}>
+<table>
             <thead>
               <tr>
                 <th></th>
-                <th>Experiment</th>
-                <th>Mode</th>
-                <th>State</th>
-                <th>Return</th>
-                <th>Dataset</th>
+                <th><LText id="Experiment"/></th>
+                <th><LText id="Mode"/></th>
+                <th><LText id="State"/></th>
+                <th><LText id="Return"/></th>
+                <th><LText id="Dataset"/></th>
                 <th></th>
               </tr>
             </thead>
@@ -735,6 +789,7 @@ function Experiments({ runs, compare, C, select, start }: any) {
                   <td>
                     <input
                       type="checkbox"
+                      aria-label={t("Select {name} for comparison", {name:r.name})}
                       checked={compare.includes(r.id)}
                       onChange={() =>
                         C(
@@ -746,35 +801,32 @@ function Experiments({ runs, compare, C, select, start }: any) {
                     />
                   </td>
                   <td>{r.name}</td>
-                  <td>{r.mode || "—"}</td>
-                  <td>{r.status}</td>
+                  <td>{enumLabel(t, r.lab_mode || r.config?.lab_mode || r.mode)}</td>
+                  <td>{enumLabel(t, r.status)}</td>
                   <td>{pct(r.total_return)}</td>
                   <td>{r.dataset_id}</td>
                   <td>
-                    <Btn onClick={() => select(r.id)}>Open</Btn>
+                    <Btn onClick={() => select(r.id)}><LText id="Open"/></Btn>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+</ScrollRegion>
         ) : (
-          <Empty>Create a research run to start comparing strategies.</Empty>
+          <Empty><LText id="Create a research run to start comparing strategies."/></Empty>
         )}
       </Panel>
-      <Panel title="Research integrity">
-        <p>
-          Results are simulated. Comparisons may be misleading when dates,
-          assets, starting capital or execution costs differ.
-        </p>
-        <Btn kind="primary" onClick={start}>
-          ＋ New experiment
-        </Btn>
+      <Panel title={t("Research integrity")}>
+        <p><LText id="Results are simulated. Comparisons may be misleading when dates, assets, starting capital or execution costs differ."/></p>
+        <Btn kind="primary" onClick={start}><LText id="＋ New experiment"/></Btn>
       </Panel>
     </>
   );
 }
 function Desk({
   detail,
+  selectedId,
   experts,
   go,
   decision,
@@ -786,86 +838,22 @@ function Desk({
   branch,
   editTeam,
 }: any) {
-  if (!detail)
+  const { t } = useLocale();
+  if (!detail || detail.id !== selectedId)
     return (
-      <Panel title="Trading desk">
-        <Empty>
-          Select an experiment from the registry, or create one to start.
-        </Empty>
-        <Btn onClick={() => go("Experiments")}>Browse experiments</Btn>
+      <Panel title={t("Trading desk")}>
+        <Empty>{selectedId ? t("Loading the selected experiment…") : t("Select an experiment from the registry, or create one to start.")}</Empty>
+        {!selectedId && <Btn onClick={() => go("Experiments")}><LText id="Browse experiments"/></Btn>}
       </Panel>
     );
-  const baseline =
-    detail.config?.strategy && detail.config.strategy !== "agent";
   return (
     <>
-      <ReplayDesk detail={detail} doStep={doStep} doRun={doRun} branch={branch} decision={decision} experts={experts} busy={busy} />
-      <Panel
-        title={baseline ? "Experts not used by this baseline" : "Expert team"}
-      >
-        {baseline ? (
-          <p>
-            This deterministic {detail.config.strategy} baseline does not call
-            experts or an LLM. The configured expert team is not part of this
-            result.
-          </p>
-        ) : (
-          <>
-            <div className="badgegrid">
-              {(detail.state?.active_team?.length ? detail.state.active_team : detail.config?.team || []).map((t: any) => {
-                const expert = experts.find((e: Any) => e.id === (t.expert_id || t.id)) || t;
-                return <ExpertBadge key={`active-${t.expert_id || t.id}`} ex={expert} role={t.role} enabled={true} />;
-              })}
-              <div className="addbadge" onClick={() => go("Expert library")}>
-                ＋<br />
-                Add expert
-              </div>
-            </div>
-            <p className="muted">
-              Changes are scheduled at the next decision boundary and preserved
-              in experiment history.
-            </p>
-            {detail.state?.pending_team && <p className="tag">Team update scheduled for the next decision boundary · {detail.state.pending_team.team.length} expert(s)</p>}
-            <Btn onClick={() => editTeam()}>Edit team</Btn>
-          </>
-        )}
-      </Panel>
-      <Panel title="Current holdings">
-        <table>
-          <thead>
-            <tr>
-              <th>Asset</th>
-              <th>Shares</th>
-              <th>Weight</th>
-              <th>Current value</th>
-              <th>Quote freshness</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(detail.holdings || []).map((h: any) => (
-              <tr key={h.symbol || h.asset}>
-                <td>{h.symbol || h.asset}</td>
-                <td>{h.quantity ?? h.shares}</td>
-                <td>{pct(h.weight)}</td>
-                <td>{money(h.market_value ?? h.value)}</td>
-                <td>
-                  <span className={h.is_stale ? "tag warn" : "tag"}>
-                    {h.is_stale ? "Stale · " : "As of "}
-                    {h.price_date || "date unavailable"}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {!detail.holdings?.length && (
-          <Empty>No positions in this snapshot.</Empty>
-        )}
-      </Panel>
+      <ReplayDesk detail={detail} selectedId={selectedId} doStep={doStep} doRun={doRun} branch={branch} decision={decision} experts={experts} editTeam={editTeam} go={go} renderExpert={(ex: Any, role: string, enabled: boolean) => <ExpertBadge ex={ex} role={role} enabled={enabled} />} busy={busy} />
     </>
   );
 }
 function ExpertBadge({ ex, role, enabled }: any) {
+  const { t } = useLocale();
   const map = [
     [
       "0000011111100000",
@@ -927,7 +915,7 @@ function ExpertBadge({ ex, role, enabled }: any) {
     <div className="badge">
       <div className="lanyard"></div>
       <div className="strip">
-        {ex?.name?.toUpperCase() || "EXPERT"} <span>{role || ex?.role}</span>
+        {ex?.name?.toUpperCase() || t("Expert")} <span>{enumLabel(t, role || ex?.role)}</span>
         <i>{enabled ? "●" : "○"}</i>
       </div>
       <div className="badgebody">
@@ -949,23 +937,24 @@ function ExpertBadge({ ex, role, enabled }: any) {
           )}
         </svg>
         <div>
-          <b>{role || ex?.role || "Advisor"}</b>
-          <small>{ex?.description || ex?.objective}</small>
+          <b>{enumLabel(t, role || ex?.role || "advisor")}</b>
+          <small>{t("原文 / Original")}: {ex?.description || ex?.objective}</small>
         </div>
       </div>
       <footer>
         EXP · v{ex?.version || "1.0"}　
         <span>{enabled === false ? "○" : "●"}</span>{" "}
         {enabled === false
-          ? "Disabled · data unavailable"
+          ? t("Disabled · data unavailable")
           : enabled === true
-            ? "Active next decision"
-            : "Versioned · not assigned"}
+            ? t("Active next decision")
+            : t("Versioned · not assigned")}
       </footer>
     </div>
   );
 }
 function Experts({ experts, add, create }: any) {
+  const { t } = useLocale();
   const [search, setSearch] = useState("");
   const [strategyFilter, setStrategyFilter] = useState("all");
   const [selectedExpert, setSelectedExpert] = useState<Any | null>(null);
@@ -980,72 +969,70 @@ function Experts({ experts, add, create }: any) {
   return (
     <>
       <div className="toolbar">
-        <input placeholder="Search experts" value={search} onChange={(event) => setSearch(event.target.value)} />
-        <select value={strategyFilter} onChange={(event) => setStrategyFilter(event.target.value)}>
-          <option value="all">All strategies</option>
-          <option value="momentum">Trend</option>
-          <option value="value">Value</option>
-          <option value="risk">Risk</option>
+        <input aria-label={t("Search experts")} placeholder={t("Search experts")} value={search} onChange={(event) => setSearch(event.target.value)} />
+        <select aria-label={t("Filter by strategy")} value={strategyFilter} onChange={(event) => setStrategyFilter(event.target.value)}>
+          <option value="all"><LText id="All strategies"/></option>
+          <option value="momentum"><LText id="Trend"/></option>
+          <option value="value"><LText id="Value"/></option>
+          <option value="risk"><LText id="Risk"/></option>
         </select>
-        <Btn kind="primary" onClick={create}>
-          Create expert
-        </Btn>
+        <Btn kind="primary" onClick={create}><LText id="Create expert"/></Btn>
       </div>
-      <div className="expertgrid">
+      <ScrollRegion label={t("Expert library")}><div className="expertgrid">
         {matches.map((ex: any) => (
           <Panel key={ex.id}>
             <ExpertBadge ex={ex} />
-            <p>{ex.objective || ex.description}</p>
+            <p>{t("原文 / Original")} · {ex.objective || ex.description}</p>
             <small>
-              Required data: {(ex.required_data || []).join(", ") || "OHLCV"}
+              {t("Required data")} · {(ex.required_data || []).join(", ") || "OHLCV"}
             </small>
-            {missingData(ex).length > 0 && <p className="error compact">Unavailable for the current OHLCV-only datasets: requires {missingData(ex).join(", ")}. No financial data is fabricated.</p>}
+            {missingData(ex).length > 0 && <p className="error compact">{t("Unavailable for this OHLCV dataset. Required data · {data}.", {data: missingData(ex).join(", ")})}</p>}
             <div className="toolbar">
-              <Btn onClick={() => add(ex)}>Add to team</Btn>
-              <Btn onClick={() => add({ ...ex, role: "Advisor" })}>
-                Add as advisor
-              </Btn>
-              <Btn onClick={() => setSelectedExpert(ex)}>Strategy details</Btn>
+              <Btn onClick={() => add(ex)}><LText id="Add to team"/></Btn>
+              <Btn onClick={() => add({ ...ex, role: "Advisor" })}><LText id="Add as advisor"/></Btn>
+              <Btn onClick={() => setSelectedExpert(ex)}><LText id="Strategy details"/></Btn>
             </div>
           </Panel>
         ))}
-        {!matches.length && <Empty>No expert cards match these filters.</Empty>}
+        {!matches.length && <Empty><LText id="No expert cards match these filters."/></Empty>}
       </div>
-      <Panel title="Role rules">
+      </ScrollRegion>
+      <Panel title={t("Role rules")}>
         <p>
-          Advisors provide evidence and dissent; the execution engine accepts
-          one final target plan. Missing required data must block or limit
-          activation.
+          <LText id="Advisors provide evidence and dissent. The execution engine accepts one final target plan. Missing required data must block or limit activation."/>
         </p>
       </Panel>
       {selectedExpert && <div className="overlay"><div className="modal">
-        <button className="x" onClick={() => setSelectedExpert(null)}>×</button>
+        <button className="x" aria-label={t("Close dialog")} onClick={() => setSelectedExpert(null)}>×</button>
         <h2>{selectedExpert.name} · v{selectedExpert.version || "1"}</h2>
-        <p>{selectedExpert.description || selectedExpert.objective}</p>
+        <p>{t("原文 / Original")} · {selectedExpert.description || selectedExpert.objective}</p>
+        <p className="muted"><LText id="Saved expert profile text is shown in its original language."/></p>
         <dl className="expert-details">
-          <dt>Strategy objective</dt><dd>{selectedExpert.objective || "Not provided"}</dd>
-          <dt>Horizon</dt><dd>{selectedExpert.horizon || "Not specified"}</dd>
-          <dt>Required data</dt><dd>{requiredData(selectedExpert).join(", ") || "OHLCV"}</dd>
-          <dt>Instructions</dt><dd>{selectedExpert.instructions || "Not provided"}</dd>
-          <dt>Risk notes</dt><dd>{selectedExpert.risk_notes || "Not provided"}</dd>
+          <dt><LText id="Strategy objective"/></dt><dd>{selectedExpert.objective || t("Not provided")}</dd>
+          <dt><LText id="Horizon"/></dt><dd>{selectedExpert.horizon || t("Not specified")}</dd>
+          <dt><LText id="Required data"/></dt><dd>{requiredData(selectedExpert).join(", ") || "OHLCV"}</dd>
+          <dt><LText id="Instructions"/></dt><dd>{selectedExpert.instructions || t("Not provided")}</dd>
+          <dt><LText id="Risk notes"/></dt><dd>{selectedExpert.risk_notes || t("Not provided")}</dd>
         </dl>
-        {missingData(selectedExpert).length > 0 && <p className="error compact">Unavailable for the current OHLCV-only datasets: requires {missingData(selectedExpert).join(", ")}. No financial data is fabricated.</p>}
-        <Btn onClick={() => setSelectedExpert(null)}>Close details</Btn>
+        {missingData(selectedExpert).length > 0 && <p className="error compact">{t("Unavailable for this OHLCV dataset. Required data · {data}.", {data: missingData(selectedExpert).join(", ")})}</p>}
+        <Btn onClick={() => setSelectedExpert(null)}><LText id="Close details"/></Btn>
       </div></div>}
     </>
   );
 }
 function Reviews({ items, review }: any) {
+  const { t } = useLocale();
   return (
-    <Panel title="Pending decisions">
+    <Panel title={t("Pending decisions")}>
       {items?.length ? (
-        <table>
+        <ScrollRegion label={t("Pending decisions")}>
+<table>
           <thead>
             <tr>
-              <th>Decision</th>
-              <th>Experiment</th>
-              <th>Date</th>
-              <th>Proposal</th>
+              <th><LText id="Decision"/></th>
+              <th><LText id="Experiment"/></th>
+              <th><LText id="Date"/></th>
+              <th><LText id="Proposal"/></th>
               <th></th>
             </tr>
           </thead>
@@ -1056,7 +1043,7 @@ function Reviews({ items, review }: any) {
                 <td>{d.experiment_name || d.experiment_id}</td>
                 <td>{d.date || "—"}</td>
                 <td>
-                  <b>{(d.decision?.original_proposal || d.proposal || d.original_proposal)?.action || d.decision?.action || d.action || "Proposal"}</b>
+                  <b>{enumLabel(t, (d.decision?.original_proposal || d.proposal || d.original_proposal)?.action || d.decision?.action || d.action || t("Proposal"))}</b>
                   {(d.decision?.original_proposal || d.proposal || d.original_proposal)?.targets && (
                     <div>
                       {Object.entries((d.decision?.original_proposal || d.proposal || d.original_proposal).targets).map(
@@ -1069,25 +1056,22 @@ function Reviews({ items, review }: any) {
                     </div>
                   )}
                   <small>
-                    {(d.decision?.original_proposal || d.proposal || d.original_proposal)?.rationale || d.rationale ||
-                      "No rationale was returned with this proposal."}
+                    {t("原文 / Original")} · {(d.decision?.original_proposal || d.proposal || d.original_proposal)?.rationale || d.rationale ||
+                      t("No rationale was returned with this proposal.")}
                   </small>
                 </td>
                 <td>
-                  <Btn kind="primary" onClick={() => review(normalizeReview(d), "approve")}>
-                    Approve
-                  </Btn>
-                  <Btn onClick={() => review(normalizeReview(d), "modify")}>Modify</Btn>
-                  <Btn kind="danger" onClick={() => review(normalizeReview(d), "reject")}>
-                    Reject
-                  </Btn>
+                  <Btn kind="primary" onClick={() => review(normalizeReview(d), "approve")}><LText id="Approve"/></Btn>
+                  <Btn onClick={() => review(normalizeReview(d), "modify")}><LText id="Modify"/></Btn>
+                  <Btn kind="danger" onClick={() => review(normalizeReview(d), "reject")}><LText id="Reject"/></Btn>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+</ScrollRegion>
       ) : (
-        <Empty>No pending review decisions.</Empty>
+        <Empty><LText id="No pending review decisions."/></Empty>
       )}
     </Panel>
   );
@@ -1104,53 +1088,54 @@ function normalizeReview(item: Any) {
   };
 }
 function ReviewModal({ item, close, review }: any) {
+  const { t } = useLocale();
   const originalTargets = item?.original_proposal?.targets || {};
   const [reason, setReason] = useState("");
-  const [targetsText, setTargetsText] = useState(JSON.stringify(originalTargets, null, 2));
+  const hasPreserved = (item?.original_proposal?.preserve_symbols || []).length > 0;
+  const [targetsText, setTargetsText] = useState(hasPreserved ? "" : JSON.stringify(originalTargets, null, 2));
   const symbols: string[] = item?.config?.symbols || [];
   const maxWeight = Number(item?.config?.max_position_weight);
   const validateTargets = (source: string) => {
     try {
       const targets = JSON.parse(source);
-      if (!targets || Array.isArray(targets) || typeof targets !== "object") return "Enter a JSON object mapping symbols to target weights.";
-      if (!Number.isFinite(maxWeight) || !symbols.length) return "Experiment limits are still loading.";
+      if (!targets || Array.isArray(targets) || typeof targets !== "object") return t("Enter a JSON object mapping symbols to target weights.");
+      if (!Number.isFinite(maxWeight) || !symbols.length) return t("Experiment limits are still loading.");
       let total = 0;
       for (const [rawSymbol, rawWeight] of Object.entries(targets)) {
         const symbol = rawSymbol.toUpperCase();
-        if (!symbols.includes(symbol)) return `${symbol} is not in this experiment’s asset universe.`;
-        if (typeof rawWeight !== "number" || !Number.isFinite(rawWeight) || rawWeight < 0) return `${symbol} must have a finite, non-negative weight.`;
-        if (rawWeight > maxWeight + 1e-9) return `${symbol} exceeds the ${(maxWeight * 100).toFixed(2)}% per-position limit.`;
+        if (!symbols.includes(symbol)) return t("{symbol} is not in this experiment’s asset universe.", {symbol});
+        if (typeof rawWeight !== "number" || !Number.isFinite(rawWeight) || rawWeight < 0) return t("{symbol} must have a finite, non-negative weight.", {symbol});
+        if (rawWeight > maxWeight + 1e-9) return t("{symbol} exceeds the {limit}% per-position limit.", {symbol, limit:(maxWeight * 100).toFixed(2)});
         total += rawWeight;
       }
-      if (total > 1 + 1e-9) return "Target weights cannot exceed 100% in total.";
+      if (total > 1 + 1e-9) return t("Target weights cannot exceed 100% in total.");
       return "";
     } catch {
-      return "Targets must be valid JSON.";
+      return t("Targets must be valid JSON.");
     }
   };
   const targetProblem = validateTargets(targetsText);
   return (
     <div className="overlay">
       <div className="modal">
-        <button className="x" onClick={close}>
+        <button className="x" aria-label={t("Close dialog")} onClick={close}>
           ×
         </button>
         <h2>
-          Review decision ·{" "}
-          {item?.as_of_date || item?.date || "date unavailable"}
+          {t("Review decision")} · {item?.experiment_name ? `${item.experiment_name} · ` : ""}
+          {item?.as_of_date || item?.date || t("Date unavailable")}
         </h2>
-        <p>Original proposal remains in the audit record.</p>
-        {String(item?.original_proposal?.action || "").toLowerCase() === "hold" && <p className="tag">Approving HOLD keeps the current portfolio and creates no new order.</p>}
+        <p><LText id="Original proposal remains in the audit record."/></p>
+        {String(item?.original_proposal?.action || "").toLowerCase() === "hold" && <p className="tag"><LText id="Approving HOLD keeps the current portfolio and creates no new order."/></p>}
         {item?.original_proposal && (
           <div className="proposal-preview">
             <b>
-              {String(
-                item.original_proposal.action || "Proposal",
-              ).toUpperCase()}
+              {enumLabel(t, item.original_proposal.action || t("Proposal"))}
             </b>
             <p>
-              {item.original_proposal.rationale || "No rationale provided."}
+              {t("原文 / Original")} · {item.original_proposal.rationale || t("No rationale provided.")}
             </p>
+            {hasPreserved && <p>{t("four.preserve")} · {item.original_proposal.preserve_symbols.join(", ")}</p>}
             {item.original_proposal.targets && (
               <pre>
                 {JSON.stringify(item.original_proposal.targets, null, 2)}
@@ -1158,13 +1143,10 @@ function ReviewModal({ item, close, review }: any) {
             )}
           </div>
         )}
-        <label>
-          Reason (required for modify/reject)
-          <textarea placeholder="Explain your intervention" value={reason} onChange={(event) => setReason(event.target.value)} />
+        <label><LText id="Reason (required for modify/reject)"/><textarea placeholder={t("Explain your intervention")} value={reason} onChange={(event) => setReason(event.target.value)} />
         </label>
-        <label>
-          Modified target weights (JSON; example target AAPL at 10%)
-          <textarea
+        {hasPreserved && <p className="notice">{t("four.fullTargetsWarning")}</p>}
+        <label><LText id="Modified target weights (JSON; example target AAPL at 10%)"/><textarea
             placeholder={'{"AAPL":0.1}'}
             value={targetsText}
             onChange={(event) => setTargetsText(event.target.value)}
@@ -1172,31 +1154,26 @@ function ReviewModal({ item, close, review }: any) {
         </label>
         {targetProblem && <p className="error compact">{targetProblem}</p>}
         <div className="toolbar">
-          <Btn kind="primary" onClick={() => review(item, "approve")}>
-            Approve
-          </Btn>
+          <Btn kind="primary" onClick={() => review(item, "approve")}><LText id="Approve"/></Btn>
           <Btn
             disabled={!reason.trim() || !!targetProblem}
             onClick={() => {
               if (!reason.trim() || targetProblem) return;
               review(item, "modify", reason.trim(), JSON.parse(targetsText));
             }}
-          >
-            Modify
-          </Btn>
+          ><LText id="Modify"/></Btn>
           <Btn
             kind="danger"
             disabled={!reason.trim()}
             onClick={() => review(item, "reject", reason.trim())}
-          >
-            Reject
-          </Btn>
+          ><LText id="Reject"/></Btn>
         </div>
       </div>
     </div>
   );
 }
 function TeamEditor({ team: initialTeam, experts, pendingPolicy, hasPending, close, save }: any) {
+  const { t } = useLocale();
   const [team, setTeam] = useState<Any[]>(initialTeam.map((item: Any) => ({
     expert_id: item.expert_id || item.id,
     role: String(item.role || "advisor").toLowerCase().includes("trad") || item.role === "strategy" ? "trader" : "advisor",
@@ -1223,120 +1200,112 @@ function TeamEditor({ team: initialTeam, experts, pendingPolicy, hasPending, clo
   return (
     <div className="overlay">
       <div className="modal team-editor">
-        <button className="x" onClick={close}>×</button>
-        <h2>Trading team</h2>
-        <p>Changes become active at the next decision boundary. Disabled or removed experts will not participate in the next decision.</p>
-        {hasPending && <p className="tag">Pending review policy: {pendingPolicy || "choose before saving"}</p>}
+        <button className="x" aria-label={t("Close dialog")} onClick={close}>×</button>
+        <h2><LText id="Trading team"/></h2>
+        <p><LText id="Changes become active at the next decision boundary. Disabled or removed experts will not participate in the next decision."/></p>
+        {hasPending && <p className="tag">{t("Pending review policy")} · {pendingPolicy ? enumLabel(t, pendingPolicy) : t("Choose before saving")}</p>}
         <div className="team-edit-list">
           {team.map((item) => {
-            const expert = expertFor(item.expert_id) || { name: item.expert_id, description: "Expert profile unavailable" };
+            const expert = expertFor(item.expert_id) || { name: item.expert_id, description: t("Expert profile unavailable") };
             const supported = available(expert);
             return <article className="team-edit-row" key={item.expert_id}>
               <div className="team-edit-main">
                 <strong>{expert.name}</strong>
                 <span className="muted">{expert.version ? `v${expert.version}` : ""}</span>
                 <p>{expert.objective || expert.description || ""}</p>
-                <small>Requires: {(expert.required_data || []).join(", ") || "OHLCV"}</small>
-                {!supported && <small className="error">Unavailable: this experiment supplies price history only.</small>}
-                <details><summary>Instructions and limits</summary><p>{expert.instructions || "No instructions provided."}</p><small>{expert.risk_notes || "No risk notes provided."}</small></details>
+                <small>{t("Required data")} · {(expert.required_data || []).join(", ") || "OHLCV"}</small>
+                {!supported && <small className="error"><LText id="Unavailable: this experiment supplies price history only."/></small>}
+                <details><summary><LText id="Instructions and limits"/></summary><p>{expert.instructions || t("No instructions provided.")}</p><small>{expert.risk_notes || t("No risk notes provided.")}</small></details>
               </div>
-              <label className="team-role">Role<select value={item.role} onChange={(event) => update(item.expert_id, { role: event.target.value })}>
-                <option value="trader">Trader</option><option value="advisor">Advisor</option>
+              <label className="team-role"><LText id="Role"/><select value={item.role} onChange={(event) => update(item.expert_id, { role: event.target.value })}>
+                <option value="trader"><LText id="Trader"/></option><option value="advisor"><LText id="Advisor"/></option>
               </select></label>
-              <label className="team-enabled"><input type="checkbox" checked={item.enabled} disabled={!supported} onChange={(event) => update(item.expert_id, { enabled: event.target.checked })} /> Enabled</label>
-              <Btn kind="danger" onClick={() => setTeam((items) => items.filter((row) => row.expert_id !== item.expert_id))}>Remove</Btn>
+              <label className="team-enabled"><input type="checkbox" checked={item.enabled} disabled={!supported} onChange={(event) => update(item.expert_id, { enabled: event.target.checked })} /> <LText id="Enabled"/></label>
+              <Btn kind="danger" onClick={() => setTeam((items) => items.filter((row) => row.expert_id !== item.expert_id))}><LText id="Remove"/></Btn>
             </article>;
           })}
         </div>
         <div className="toolbar">
           <select value={newExpert} onChange={(event) => setNewExpert(event.target.value)}>
-            <option value="">Add an expert…</option>
-            {experts.filter((expert: Any) => !team.some((item) => item.expert_id === expert.id) && available(expert)).map((expert: Any) => <option key={expert.id} value={expert.id}>{expert.name} · {(expert.role || "advisor")}</option>)}
+            <option value=""><LText id="Add an expert…"/></option>
+            {experts.filter((expert: Any) => !team.some((item) => item.expert_id === expert.id) && available(expert)).map((expert: Any) => <option key={expert.id} value={expert.id}>{expert.name} · {enumLabel(t, expert.role || "advisor")}</option>)}
           </select>
-          <Btn onClick={add} disabled={!newExpert}>Add to team</Btn>
+          <Btn onClick={add} disabled={!newExpert}><LText id="Add to team"/></Btn>
         </div>
         <p className={canSave ? "muted" : "error"}>
-          {enabledTraders !== 1 ? "Enable exactly one trader. Other enabled experts must be advisors." : unavailable.length ? "An enabled expert requires data that this experiment does not have." : duplicate ? "Remove duplicate expert assignments." : "Exactly one enabled trader is selected."}
+          {enabledTraders !== 1 ? t("Enable exactly one trader. Other enabled experts must be advisors.") : unavailable.length ? t("An enabled expert requires data that this experiment does not have.") : duplicate ? t("Remove duplicate expert assignments.") : t("Exactly one enabled trader is selected.")}
         </p>
         <div className="toolbar">
-          <Btn onClick={close}>Cancel</Btn>
-          <Btn kind="primary" disabled={!canSave} onClick={() => save(team, pendingPolicy || "keep")}>Schedule team change</Btn>
+          <Btn onClick={close}><LText id="Cancel"/></Btn>
+          <Btn kind="primary" disabled={!canSave} onClick={() => save(team, pendingPolicy || "keep")}><LText id="Schedule team change"/></Btn>
         </div>
       </div>
     </div>
   );
 }
 function TeamChangeModal({ expert, close, choose }: any) {
+  const { t } = useLocale();
   return (
     <div className="overlay">
       <div className="modal">
-        <button className="x" onClick={close}>
+        <button className="x" aria-label={t("Close dialog")} onClick={close}>
           ×
         </button>
-        <h2>Schedule expert change</h2>
-        <p>
-          A review proposal is waiting. Choose what happens to it before
-          changing the team.
-        </p>
-        {expert && <p><b>{expert.name}</b> will take effect at the next decision boundary.</p>}
+        <h2><LText id="Schedule expert change"/></h2>
+        <p><LText id="A review proposal is waiting. Choose what happens to it before changing the team."/></p>
+        {expert && <p><b>{expert.name}</b> <LText id="will take effect at the next decision boundary."/></p>}
         <div className="toolbar">
-          <Btn onClick={() => choose("keep")}>Keep proposal for review</Btn>
-          <Btn kind="danger" onClick={() => choose("discard")}>
-            Discard proposal; change next decision
-          </Btn>
+          <Btn onClick={() => choose("keep")}><LText id="Keep proposal for review"/></Btn>
+          <Btn kind="danger" onClick={() => choose("discard")}><LText id="Discard proposal; change next decision"/></Btn>
         </div>
       </div>
     </div>
   );
 }
 function BranchModal({ detail, close, create }: any) {
+  const { t } = useLocale();
   return (
     <div className="overlay">
       <div className="modal">
-        <button className="x" onClick={close}>
+        <button className="x" aria-label={t("Close dialog")} onClick={close}>
           ×
         </button>
-        <h2>Start an oversight branch</h2>
-        <p>
-          This creates a separate experiment with its own audit trail. The
-          current run remains unchanged.
-        </p>
-        <label>
-          Oversight mode
-          <select
+        <h2>{t(detail.config?.lab_mode === "multisource_agent" ? "four.branchTitle" : "Start an oversight branch")}</h2>
+        <p><LText id="This creates a separate experiment with its own audit trail. The current run remains unchanged."/></p>
+        {detail.config?.lab_mode === "multisource_agent" ? <p>{t("four.branchHuman")}</p> : detail.config?.lab_mode ? <p>{t("four.branchUnavailable")}</p> : <label><LText id="Oversight mode"/><select
             id="branch-mode"
             defaultValue={
               detail.config?.mode === "ai_only" ? "human_review" : "ai_only"
             }
           >
-            <option value="ai_only">AI only</option>
-            <option value="human_review">AI + Human Review</option>
+            <option value="ai_only"><LText id="AI only"/></option>
+            <option value="human_review"><LText id="AI + Human Review"/></option>
           </select>
-        </label>
+        </label>}
         <div className="toolbar end">
-          <Btn onClick={close}>Cancel</Btn>
-          <Btn kind="primary" onClick={() => create(value("branch-mode"))}>
-            Create branch
-          </Btn>
+          <Btn onClick={close}><LText id="Cancel"/></Btn>
+          <Btn kind="primary" disabled={!!detail.config?.lab_mode && detail.config.lab_mode !== "multisource_agent"} onClick={() => create(value("branch-mode"))}>{t(detail.config?.lab_mode === "multisource_agent" ? "four.branchTitle" : "Create branch")}</Btn>
         </div>
       </div>
     </div>
   );
 }
 function Portfolio({ detail }: any) {
+  const { t } = useLocale();
   return (
     <>
       <KPIs detail={detail} />
-      <Panel title="Open holdings">
-        <table>
+      <Panel title={t("Open holdings")}>
+        <ScrollRegion label={t("Portfolio")}>
+<table>
           <thead>
             <tr>
-              <th>Symbol</th>
-              <th>Quantity</th>
-              <th>Weight</th>
-              <th>Market value</th>
-              <th>Unrealized P&L</th>
-              <th>Quote freshness</th>
+              <th><LText id="Symbol"/></th>
+              <th><LText id="Quantity"/></th>
+              <th><LText id="Weight"/></th>
+              <th><LText id="Market value"/></th>
+              <th><LText id="Unrealized P&L"/></th>
+              <th><LText id="Quote freshness"/></th>
             </tr>
           </thead>
           <tbody>
@@ -1349,51 +1318,56 @@ function Portfolio({ detail }: any) {
                 <td>{money(h.unrealized_pnl)}</td>
                 <td>
                   <span className={h.is_stale ? "tag warn" : "tag"}>
-                    {h.is_stale ? "Stale · " : "As of "}
-                    {h.price_date || "date unavailable"}
+                    {h.is_stale ? t("Stale") : t("As of")} · 
+                    {h.price_date || t("Date unavailable")}
                   </span>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+</ScrollRegion>
         {!detail?.holdings?.length && (
-          <Empty>Select a run with recorded holdings.</Empty>
+          <Empty><LText id="Select a run with recorded holdings."/></Empty>
         )}
       </Panel>
-      <Panel title="Order ledger">
-        <table>
+      <Panel title={t("Order ledger")}>
+        <ScrollRegion label={t("Order ledger")}>
+<table>
           <thead>
             <tr>
-              <th>Order</th>
-              <th>Target allocation</th>
-              <th>Recorded fills</th>
-              <th>Status</th>
-              <th>Eligible date</th>
+              <th><LText id="Order"/></th>
+              <th><LText id="Target allocation"/></th>
+              <th><LText id="Recorded fills"/></th>
+              <th><LText id="Status"/></th>
+              <th><LText id="Eligible date"/></th>
             </tr>
           </thead>
           <tbody>
             {(detail?.orders || []).map((o: any) => (
               <tr key={o.id}>
-                <td>{o.id}<small className="muted">Created {o.created_date || "—"}</small></td>
-                <td>{o.target_weights && Object.keys(o.target_weights).length ? Object.entries(o.target_weights).map(([symbol, weight]) => <span key={symbol} className="tag">{symbol} {pct(weight)}</span>) : "Cash / no targets"}</td>
-                <td>{(o.fills || []).length ? o.fills.map((fill: Any, index: number) => <div key={`${fill.symbol}-${index}`}><span className="tag">{fill.side} {fill.symbol} · {Number(fill.quantity).toFixed(4)} @ {money(fill.fill_price, 4)}</span><small>{fill.date || "Fill date unavailable"} · fee {money(fill.fees, 4)}</small></div>) : "No fills recorded"}</td>
-                <td>{o.status}</td>
-                <td>{o.eligible_date || "Not yet eligible"}</td>
+                <td>{o.id}<small className="muted">{t("Created")} · {o.created_date || "—"}</small></td>
+                <td>{o.target_weights && Object.keys(o.target_weights).length ? Object.entries(o.target_weights).map(([symbol, weight]) => <span key={symbol} className="tag">{symbol} {pct(weight)}</span>) : t("Cash / no targets")}</td>
+                <td>{(o.fills || []).length ? o.fills.map((fill: Any, index: number) => <div key={`${fill.symbol}-${index}`}><span className="tag">{enumLabel(t, fill.side)} {fill.symbol} · {Number(fill.quantity).toFixed(4)} @ {money(fill.fill_price, 4)}</span><small>{fill.date || t("Fill date unavailable")} · {t("Fee")} {money(fill.fees, 4)}</small></div>) : t("No fills recorded")}</td>
+                <td>{enumLabel(t, o.status)}</td>
+                <td>{o.eligible_date || t("Not yet eligible")}</td>
               </tr>
             ))}
           </tbody>
         </table>
-        {!detail?.orders?.length && <Empty>No orders in this run.</Empty>}
+</ScrollRegion>
+        {!detail?.orders?.length && <Empty><LText id="No orders in this run."/></Empty>}
       </Panel>
     </>
   );
 }
 function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
+  const { t } = useLocale();
   const [selectedReport, setSelectedReport] = useState("");
   const [reportDetail, setReportDetail] = useState<Any | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
-  const [reportError, setReportError] = useState("");
+  const [reportError, setReportError] = useState<Error | string>("");
+  const reportAnalysis = useAnalysis(selectedReport, Boolean(reportDetail?.config?.lab_mode));
   const firstRunId = runs?.[0]?.id || "";
   useEffect(() => {
     if (!selectedReport && firstRunId) {
@@ -1409,7 +1383,7 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
     setReportError("");
     req(`/experiments/${selectedReport}`)
       .then((data) => { if (active) setReportDetail(data); })
-      .catch((error: any) => { if (active) setReportError(error.message); })
+      .catch((error: any) => { if (active) setReportError(error); })
       .finally(() => { if (active) setReportLoading(false); });
     return () => { active = false; };
   }, [selectedReport, firstRunId]);
@@ -1425,16 +1399,17 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
   const estimatedCost = usage.reduce((sum: number, item: Any) => sum + (Number(item.estimated_cost_usd) || 0), 0);
   return (
     <>
-      <Panel title="Experiment comparison">
+      <Panel title={t("Experiment comparison")}>
         {runs.length ? (
-          <table>
+          <ScrollRegion label={t("Experiment comparison")}>
+<table>
             <thead>
               <tr>
                 <th></th>
-                <th>Experiment</th>
-                <th>Mode</th>
-                <th>Status</th>
-                <th>As of</th>
+                <th><LText id="Experiment"/></th>
+                <th><LText id="Mode"/></th>
+                <th><LText id="Status"/></th>
+                <th><LText id="As of"/></th>
               </tr>
             </thead>
             <tbody>
@@ -1443,6 +1418,7 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
                   <td>
                     <input
                       type="checkbox"
+                      aria-label={t("Select {name} for comparison", {name:r.name})}
                       checked={compare.includes(r.id)}
                       onChange={() =>
                         C(
@@ -1454,44 +1430,43 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
                     />
                   </td>
                   <td>{r.name}</td>
-                  <td>{r.mode || "—"}</td>
-                  <td>{r.status}</td>
+                  <td>{enumLabel(t, r.lab_mode || r.config?.lab_mode || r.mode)}</td>
+                  <td>{enumLabel(t, r.status)}</td>
                   <td>{r.current_date || "—"}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+</ScrollRegion>
         ) : (
-          <Empty>No saved experiments to compare yet.</Empty>
+          <Empty><LText id="No saved experiments to compare yet."/></Empty>
         )}
         <div className="toolbar">
-          <span>
-            Compatibility checks include data version, date range, capital,
-            costs and strategy.
-          </span>
+          <span><LText id="Compatibility checks include data version, date range, capital, costs and strategy."/></span>
           <Btn kind="primary" onClick={compareNow}>
-            Compare selected ({compare.length})
+            {t("Compare selected ({count})", {count: compare.length})}
           </Btn>
         </div>
         {result && (
           <div className="comparison-result">
             <div className={result.comparable ? "tag lime" : "tag warn"}>
               {result.comparable
-                ? "Compatible configurations"
-                : "Configuration differences found"}
+                ? t("Compatible configurations")
+                : t("Configuration differences found")}
             </div>
-            {result.notice && <p>{result.notice}</p>}
-            <table>
+            {result.notice && <p>{t("Server response (original)")} · {result.notice}</p>}
+            <ScrollRegion label={t("Experiment comparison")}>
+<table>
               <thead>
                 <tr>
-                  <th>Experiment</th>
-                  <th>Oversight</th>
-                  <th>Status</th>
-                  <th>As of</th>
-                  <th>Total return</th>
-                  <th>Max drawdown</th>
-                  <th>Annual volatility</th>
-                  <th>Fees</th>
+                  <th><LText id="Experiment"/></th>
+                  <th><LText id="Oversight"/></th>
+                  <th><LText id="Status"/></th>
+                  <th><LText id="As of"/></th>
+                  <th><LText id="Total return"/></th>
+                  <th><LText id="Max drawdown"/></th>
+                  <th><LText id="Annual volatility"/></th>
+                  <th><LText id="Fees"/></th>
                   <th>Sharpe</th>
                 </tr>
               </thead>
@@ -1499,8 +1474,8 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
                 {result.experiments.map((x: any, i: number) => (
                   <tr key={x.id}>
                     <td>{x.name}</td>
-                    <td>{result.treatment_modes?.[i]}</td>
-                    <td>{x.status}</td>
+                    <td>{enumLabel(t, result.treatment_modes?.[i])}</td>
+                    <td>{enumLabel(t, x.status)}</td>
                     <td>{x.as_of_date || "—"}</td>
                     <td>{pct(x.metrics?.total_return)}</td>
                     <td>{pct(x.metrics?.max_drawdown)}</td>
@@ -1511,82 +1486,83 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
                 ))}
               </tbody>
             </table>
-            {Object.keys(result.differences || {}).length > 0 && (
-              <details>
-                <summary>Review settings that differ</summary>
-                <pre>{JSON.stringify(result.differences, null, 2)}</pre>
-              </details>
+</ScrollRegion>
+            {(result.treatment_differences || result.control_differences) ? <>
+              <details><summary>{t("four.treatmentDifferences")}</summary><pre>{JSON.stringify(result.treatment_differences || {}, null, 2)}</pre></details>
+              <details><summary>{t("four.controlDifferences")}</summary><pre>{JSON.stringify(result.control_differences || {}, null, 2)}</pre></details>
+            </> : Object.keys(result.differences || {}).length > 0 && (
+              <details><summary><LText id="Review settings that differ"/></summary><pre>{JSON.stringify(result.differences, null, 2)}</pre></details>
             )}
           </div>
         )}
       </Panel>
-      <Panel title="Experiment report details">
-        <label>
-          Experiment
-          <select value={selectedReport} onChange={(event) => setSelectedReport(event.target.value)}>
+      <Panel title={t("Experiment report details")}>
+        <label><LText id="Experiment"/><select value={selectedReport} onChange={(event) => setSelectedReport(event.target.value)}>
             {runs.map((run: Any) => <option key={run.id} value={run.id}>{run.name}</option>)}
           </select>
         </label>
-        {reportLoading && <p className="muted">Loading saved report details…</p>}
-        {reportError && <p className="error">{reportError}</p>}
+        {reportLoading && <p className="muted"><LText id="Loading saved report details…"/></p>}
+        {reportError && <p className="error"><ErrorMessage error={reportError}/></p>}
         {reportDetail && !reportLoading && <>
           <div className="kpis report-kpis">
-            <div className="kpi"><label>Annualized volatility</label><b>{pct(reportDetail.metrics?.annualized_volatility)}</b></div>
-            <div className="kpi"><label>Trading fees</label><b>{money(reportDetail.metrics?.fees_paid ?? reportDetail.metrics?.fees, 2)}</b></div>
-            <div className="kpi"><label>Human reviews</label><b>{reviewedDecisions.length}</b><small>Approve {reviewCounts.approve} · Modify {reviewCounts.modify} · Reject {reviewCounts.reject}</small></div>
-            <div className="kpi"><label>LLM calls / estimated cost</label><b>{reportDetail.state?.llm_calls ?? usage.length} / {money(estimatedCost, 6)}</b><small>Cost sums recorded estimates only{usage.some((item: Any) => item.estimated_cost_usd == null) ? "; some costs unknown" : ""}</small></div>
+            <div className="kpi"><label><LText id="Annualized volatility"/></label><b>{pct(reportDetail.metrics?.annualized_volatility)}</b></div>
+            <div className="kpi"><label><LText id="Trading fees"/></label><b>{money(reportDetail.metrics?.fees_paid ?? reportDetail.metrics?.fees, 2)}</b></div>
+            <div className="kpi"><label><LText id="Human reviews"/></label><b>{reviewedDecisions.length}</b><small>{t("Approve")} {reviewCounts.approve} · {t("Modify")} {reviewCounts.modify} · {t("Reject")} {reviewCounts.reject}</small></div>
+            <div className="kpi"><label><LText id="LLM calls / estimated cost"/></label><b>{reportDetail.state?.llm_calls ?? usage.length} / {money(estimatedCost, 6)}</b><small>{t("Cost sums recorded estimates only")}{usage.some((item: Any) => item.estimated_cost_usd == null) ? ` · ${t("Some costs are unknown")}` : ""}</small></div>
           </div>
-          <p className="muted">Review timestamps are shown where recorded. Review duration is unavailable.</p>
-          <h4>Review actions</h4>
-          {reviewedDecisions.length ? <table><thead><tr><th>Decision</th><th>Action</th><th>Recorded time</th><th>Reason</th></tr></thead><tbody>
+          {reportDetail.config?.lab_mode && (reportAnalysis.loading ? <p>{t("four.loading")}</p> : reportAnalysis.error ? <p className="error"><ErrorMessage error={reportAnalysis.error as Error}/></p> : reportAnalysis.data && <InterventionHistory data={reportAnalysis.data}/>)}
+          <p className="muted"><LText id="Review timestamps are shown where recorded. Review duration is unavailable."/></p>
+          <h4><LText id="Review actions"/></h4>
+          {reviewedDecisions.length ? <ScrollRegion label={t("Review actions")}>
+<table><thead><tr><th><LText id="Decision"/></th><th><LText id="Action"/></th><th><LText id="Recorded time"/></th><th><LText id="Reason"/></th></tr></thead><tbody>
             {reviewedDecisions.map((decision: Any) => {
               const event = (reportDetail.events || []).find((item: Any) => item.type === "decision_reviewed" && item.decision_id === decision.id);
-              const recorded = event?.created_at || (decision.review.date ? `${decision.review.date} · time unavailable` : "Timestamp unavailable");
-              return <tr key={decision.id}><td>{decision.id}</td><td>{decision.review.action}</td><td>{recorded}</td><td>{decision.review.reason || "—"}</td></tr>;
+              const recorded = event?.created_at || (decision.review.date ? `${decision.review.date} · ${t("Time unavailable")}` : t("Timestamp unavailable"));
+              return <tr key={decision.id}><td>{decision.id}</td><td>{enumLabel(t, decision.review.action)}</td><td>{recorded}</td><td>{decision.review.reason ? <>{t("原文 / Original")} · {decision.review.reason}</> : "—"}</td></tr>;
             })}
-          </tbody></table> : <Empty>No human review actions recorded.</Empty>}
-          {usage.length > 0 && <><h4>LLM usage</h4><table><thead><tr><th>Expert</th><th>Role</th><th>Status</th><th>Elapsed</th><th>Estimated cost</th></tr></thead><tbody>
-            {usage.map((item: Any, index: number) => <tr key={`${item.expert_id || "call"}-${index}`}><td>{item.expert_id || "—"}</td><td>{item.role || "—"}</td><td>{item.status || "—"}</td><td>{item.elapsed_seconds == null ? "—" : `${item.elapsed_seconds}s`}</td><td>{item.estimated_cost_usd == null ? "Unknown" : money(item.estimated_cost_usd, 6)}</td></tr>)}
-          </tbody></table></>}
+          </tbody></table>
+</ScrollRegion> : <Empty><LText id="No human review actions recorded."/></Empty>}
+          {usage.length > 0 && <><h4><LText id="LLM usage"/></h4><ScrollRegion label={t("LLM usage")}>
+<table><thead><tr><th><LText id="Expert"/></th><th><LText id="Role"/></th><th><LText id="Status"/></th><th><LText id="Elapsed"/></th><th><LText id="Estimated cost"/></th></tr></thead><tbody>
+            {usage.map((item: Any, index: number) => <tr key={`${item.expert_id || "call"}-${index}`}><td>{item.expert_id || "—"}</td><td>{enumLabel(t, item.role)}</td><td>{enumLabel(t, item.status)}</td><td>{item.elapsed_seconds == null ? "—" : `${item.elapsed_seconds}s`}</td><td>{item.estimated_cost_usd == null ? t("Unknown") : money(item.estimated_cost_usd, 6)}</td></tr>)}
+          </tbody></table>
+</ScrollRegion></>}
         </>}
-        {!reportDetail && !reportLoading && !runs.length && <Empty>No experiment report is available yet.</Empty>}
+        {!reportDetail && !reportLoading && !runs.length && <Empty><LText id="No experiment report is available yet."/></Empty>}
       </Panel>
-      <Panel title="Report export">
-        <p>
-          Exports contain saved run metrics, configuration and audit records.
-          Check data and execution settings before attributing differences.
-        </p>
-        <select id="export-run">
+      <Panel title={t("Report export")}>
+        <p><LText id="Exports contain saved run metrics, configuration and audit records. Check data and execution settings before attributing differences."/></p>
+        <select id="export-run" aria-label={t("Experiment to export")}>
           {runs.map((r: any) => (
             <option key={r.id} value={r.id}>
               {r.name}
             </option>
           ))}
         </select>
-        <select id="export-format">
+        <select id="export-format" aria-label={t("Export format")}>
           <option value="json">JSON</option>
           <option value="csv">CSV</option>
         </select>
         <Btn
           onClick={() => exportRun(value("export-run"), value("export-format"))}
-        >
-          Export report
-        </Btn>
+        ><LText id="Export report"/></Btn>
       </Panel>
     </>
   );
 }
 function Activity({ items }: any) {
+  const { t } = useLocale();
   return (
-    <Panel title="Audit trail">
+    <Panel title={t("Audit trail")}>
       {items?.length ? (
-        <table>
+        <ScrollRegion label={t("Audit trail")}>
+<table>
           <thead>
             <tr>
-              <th>Time</th>
-              <th>Experiment</th>
-              <th>Event</th>
-              <th>Details</th>
+              <th><LText id="Time"/></th>
+              <th><LText id="Experiment"/></th>
+              <th><LText id="Event"/></th>
+              <th><LText id="Details (original)"/></th>
             </tr>
           </thead>
           <tbody>
@@ -1594,80 +1570,115 @@ function Activity({ items }: any) {
               <tr key={`${e.experiment_id || "system"}:${e.id || e.event_id || index}`}>
                 <td>{e.created_at || e.timestamp || e.date || "—"}</td>
                 <td>{e.experiment_id || "—"}</td>
-                <td>{e.type || e.event || e.action}</td>
+                <td>{enumLabel(t, e.type || e.event || e.action)}</td>
                 <td>{e.details ? JSON.stringify(e.details) : e.message || e.detail || JSON.stringify(e)}</td>
               </tr>
             ))}
           </tbody>
         </table>
+</ScrollRegion>
       ) : (
-        <Empty>No recorded activity yet.</Empty>
+        <Empty><LText id="No recorded activity yet."/></Empty>
       )}
     </Panel>
   );
 }
-function DataHub({ datasets, upload }: any) {
+function DataHub({ datasets, upload, onImported }: any) {
+  const { t, locale } = useLocale();
+  const [form, setForm] = useState({ symbol: "AAPL", timeframe: "1m", start: "", end: "" });
+  const csvInputRef = useRef<HTMLInputElement>(null);
+  const [provider, setProvider] = useState<Any>({});
+  const [collectors, setCollectors] = useState<Any[]>([]);
+  const [collectorSource, setCollectorSource] = useState("demo");
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<{key: string; params?: Record<string, string | number>}>({key: ""});
+  const [error, setError] = useState<Error | string>("");
+  const loadLiveState = async () => {
+    try {
+      const [p, c] = await Promise.all([req("/market/settings"), req("/market/collector")]);
+      setProvider(p || {});
+      setCollectors(Array.isArray(c) ? c : c?.sessions || c?.collectors || []);
+    } catch (e: any) { setError(e instanceof Error ? e : "Unable to read market data status"); }
+  };
+  useEffect(() => {
+    loadLiveState();
+    const timer = window.setInterval(loadLiveState, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const submitImport = async (e: any) => {
+    e.preventDefault(); setLoading(true); setError(""); setMessage({key: ""});
+    try {
+      const payload = { symbols: [form.symbol.trim().toUpperCase()], timeframe: form.timeframe === "1m" ? "1Min" : "1Hour", start: new Date(form.start).toISOString(), end: new Date(form.end).toISOString(), feed: "iex" };
+      const result = await req("/market/alpaca/import", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const count = result.rows ?? result.bar_count ?? "—";
+      setMessage({key: "Historical bars saved as dataset {id} · {count} rows · IEX feed.", params: {id: result.dataset_id || result.id || "", count}});
+      await onImported?.();
+    } catch (e: any) { setError(e instanceof Error ? e : "Historical data import failed"); }
+    finally { setLoading(false); }
+  };
+  const startCollector = async () => {
+    setLoading(true); setError(""); setMessage({key: ""});
+    try {
+      const result = await req("/market/collector/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbols: [form.symbol.trim().toUpperCase()], timeframe: "1Min", feed: "iex", source: collectorSource }) });
+      setMessage({key: collectorSource === "demo" ? "Synthetic demo collector started · {id}. This collects market data only." : "Alpaca IEX collector started · {id}. This collects market data only.", params: {id: result?.id || "—"}});
+      await loadLiveState();
+    } catch (e: any) { setError(e instanceof Error ? e : "Collector could not start"); }
+    finally { setLoading(false); }
+  };
+  const createDemo = async () => {
+    setLoading(true); setError(""); setMessage({key: ""});
+    try {
+      const result = await req("/market/demo", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ symbols: [form.symbol.trim().toUpperCase() || "DEMO-A"], timeframe: form.timeframe, bars_per_day: form.timeframe === "1m" ? 390 : 7, days: 5 }) });
+      setMessage({key: "Synthetic demo dataset created · {count} bars. Generated data only.", params: {count: result.rows ?? "—"}}); await onImported?.();
+    } catch (e: any) { setError(e instanceof Error ? e : "Could not create demo data"); }
+    finally { setLoading(false); }
+  };
+  const stopCollector = async (session: Any) => {
+    setLoading(true); setError(""); setMessage({key: ""});
+    try {
+      await req("/market/collector/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: session.id || session.collector_id }) });
+      setMessage({key: "Collector paused. Its saved data remains available."}); await loadLiveState();
+    } catch (e: any) { setError(e instanceof Error ? e : "Collector could not be paused"); }
+    finally { setLoading(false); }
+  };
+  return <>
+    <Panel title={t("Historical minute data")}>
+      <p><LText id="Request timestamped historical bars from Alpaca using the IEX feed. Each import creates a separate immutable dataset. The secret stays in the local backend."/></p>
+      {!provider.configured && <div className="tag warn"><LText id="Alpaca credentials are not configured. Add them under Settings before requesting data."/></div>}
+      <form className="settings" onSubmit={submitImport}>
+        <label><LText id="Symbol"/><input value={form.symbol} onChange={(e) => setForm({ ...form, symbol: e.target.value })} required /></label>
+        <label><LText id="Bar interval"/><select value={form.timeframe} onChange={(e) => setForm({ ...form, timeframe: e.target.value })}><option value="1m"><LText id="1 minute"/></option><option value="1h"><LText id="1 hour"/></option></select><small><LText id="Intervals are stored as received; no chart resampling is applied."/></small></label>
+        <label><LText id="Start time"/><input type="datetime-local" value={form.start} onChange={(e) => setForm({ ...form, start: e.target.value })} required /><small><LText id="Computer local time, converted to UTC when requested."/></small></label>
+        <label><LText id="End time"/><input type="datetime-local" value={form.end} onChange={(e) => setForm({ ...form, end: e.target.value })} required /><small><LText id="Computer local time, converted to UTC when requested."/></small></label>
+        <div className="toolbar"><button className="primary" disabled={loading || !provider.configured || !form.start || !form.end}><LText id="Import Alpaca IEX bars"/></button><span><LText id="Feed: IEX · API usage depends on your account limits"/></span></div>
+      </form>
+      <div className="toolbar"><Btn disabled={loading} onClick={createDemo}><LText id="Create synthetic demo dataset"/></Btn><span><LText id="Deterministic fixture · clearly marked synthetic"/></span></div>
+      {message.key && <div className="notice">{t(message.key, message.params)}</div>}{error && <div className="error"><ErrorMessage error={error}/></div>}
+    </Panel>
+    <Panel title={t("Market collector")}>
+      <p><LText id="Collectors fetch data separately from experiments. Starting or pausing a collector never submits brokerage orders or starts an Agent."/></p>
+      <div className="toolbar"><label><LText id="Source"/><select value={collectorSource} onChange={(e) => setCollectorSource(e.target.value)}><option value="demo"><LText id="Synthetic demo"/></option><option value="alpaca" disabled={!provider.configured}>Alpaca IEX</option></select></label><span>{collectorSource === "demo" ? t("Synthetic demo · accelerated virtual clock · 1m bars") : t("Alpaca IEX · 1m bars · freshness depends on account permissions.")}</span><Btn disabled={loading || (collectorSource === "alpaca" && !provider.configured)} onClick={startCollector}><LText id="Start 1m collector"/></Btn></div>
+      {!collectors.length ? <Empty><LText id="No collector sessions recorded."/></Empty> : <ScrollRegion label={t("Market collector")}><table><thead><tr><th><LText id="Source / feed"/></th><th><LText id="Symbols · interval"/></th><th><LText id="Status"/></th><th><LText id="Latest bar"/></th><th><LText id="Data age"/></th><th></th></tr></thead><tbody>{collectors.map((c: Any) => {
+        const latest = c.last_bar_at || c.last_timestamp || c.last_received_at || "";
+        const age = latest ? Math.max(0, Math.floor((Date.now() - new Date(latest).getTime()) / 1000)) : null;
+        const active = ["running", "starting", "reconnecting", "active", "connected"].includes(String(c.status || "").toLowerCase());
+        const rawStatus = String(c.status || "").toLowerCase();
+        const stale = ["running", "active", "connected"].includes(rawStatus) && (age == null || age > (c.source === "demo" ? 8 : 180));
+        const label = ["starting"].includes(rawStatus) ? t("Connecting") : rawStatus === "reconnecting" ? t("Reconnecting") : stale ? t("Stale / no recent bar") : active && age == null ? t("Waiting for first bar") : active ? t("Collecting") : c.status ? enumLabel(t, c.status) : t("Unknown");
+        return <tr key={c.id || c.collector_id}><td>{c.source === "demo" || c.synthetic ? t("Synthetic demo") : c.source || "Alpaca"} · {c.feed || "IEX"}</td><td>{(c.symbols || [c.symbol]).filter(Boolean).join(", ")} · {c.timeframe || c.bar_interval || "—"}</td><td><span className={`tag ${stale ? "warn" : ""}`}>{label}{c.error ? ` · ${t("Server response (original)")} · ${c.error}` : ""}</span></td><td>{latest ? formatMarketTime(latest, locale) : t("No bar received")}</td><td>{age == null ? "—" : `${age}s`}</td><td>{active && <Btn disabled={loading} onClick={() => stopCollector(c)}><LText id="Pause"/></Btn>}</td></tr>;
+      })}</tbody></table></ScrollRegion>}
+      <small><LText id="“Live” describes incoming data. A forming bar is not a completed decision input. Check the saved bar timestamp and source before starting a live experiment."/></small>
+    </Panel>
+    <Panel title={t("Import CSV")}><p><LText id="Import a local OHLCV CSV as a versioned dataset. Timestamp CSV files preserve intraday bars; date-only files remain daily data."/></p><Btn kind="upload" onClick={() => csvInputRef.current?.click()}><LText id="Choose CSV"/></Btn><input ref={csvInputRef} type="file" hidden accept=".csv,text/csv" onChange={(e: any) => e.target.files?.[0] && upload(e.target.files[0])} /></Panel>
+    <Panel title={t("Available datasets")}>{datasets?.length ? <ScrollRegion label={t("Available datasets")}><table><thead><tr><th><LText id="Name"/></th><th><LText id="Dataset ID"/></th><th><LText id="Coverage"/></th><th><LText id="Symbols"/></th><th><LText id="Interval / source"/></th><th><LText id="Rows"/></th></tr></thead><tbody>{datasets.map((d: any) => <tr key={d.id}><td>{d.name}</td><td>{d.id}</td><td>{d.range?.start || d.start_date || "—"} – {d.range?.end || d.end_date || "—"}</td><td>{(d.symbols || []).join(", ")}</td><td>{d.synthetic ? t("Synthetic demo") : `${d.bar_interval || d.timeframe || t("Daily")} · ${d.source_feed || t("Imported")}`}</td><td>{d.rows ?? "—"}</td></tr>)}</tbody></table></ScrollRegion> : <Empty><LText id="No datasets yet. Import a CSV file or fetch historical bars."/></Empty>}</Panel>
+  </>;
+}
+function Settings({ settings, save, test, refresh }: any) {
+  const { t } = useLocale();
   return (
     <>
-      <Panel title="Import market data">
-        <p>
-          CSV should contain date, symbol, open, high, low, close and volume.
-          Import creates an immutable dataset version.
-        </p>
-        <label className="upload">
-          Choose CSV
-          <input
-            type="file"
-            accept=".csv,text/csv"
-            onChange={(e: any) =>
-              e.target.files?.[0] && upload(e.target.files[0])
-            }
-          />
-        </label>
-      </Panel>
-      <Panel title="Available datasets">
-        {datasets?.length ? (
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Dataset ID</th>
-                <th>Coverage</th>
-                <th>Symbols</th>
-                <th>Source</th>
-              </tr>
-            </thead>
-            <tbody>
-              {datasets.map((d: any) => (
-                <tr key={d.id}>
-                  <td>{d.name}</td>
-                  <td>{d.id}</td>
-                  <td>
-                    {d.start_date} – {d.end_date}
-                  </td>
-                  <td>{(d.symbols || []).join(", ")}</td>
-                  <td>{d.synthetic ? "Synthetic demo" : "Imported"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <Empty>
-            No datasets yet. Import a CSV file or seed the demo dataset in the
-            service.
-          </Empty>
-        )}
-      </Panel>
-    </>
-  );
-}
-function Settings({ settings, save, test }: any) {
-  return (
-    <Panel title="Model connection">
-      <p>
-        Compatible chat completions endpoint. Connection tests make a real
-        minimal request. API key is write-only and is never shown again.
-      </p>
+    <Panel title={t("Model connection")}>
+      <p><LText id="Compatible chat completions endpoint. Connection tests make a real minimal request. API key is write-only and is never shown again."/> </p>
       <form
         onSubmit={async (e: any) => {
           e.preventDefault();
@@ -1691,300 +1702,280 @@ function Settings({ settings, save, test }: any) {
         }}
         className="settings"
       >
-        <label>
-          Base URL
-          <input
+        <label><LText id="Base URL"/><input
             id="base_url"
             defaultValue={settings.base_url || ""}
             placeholder="https://…/v1"
           />
         </label>
-        <label>
-          Model
-          <input
+        <label><LText id="Model"/><input
             id="model"
             defaultValue={settings.model || ""}
-            placeholder="Model name"
+            placeholder={t("Model name")}
           />
         </label>
         <label>
-          API key{" "}
+          {t("API key")}{" "}
           <small>
             {settings.api_key_configured
-              ? "Configured; enter to replace"
-              : "Not configured"}
+              ? t("Configured; enter to replace")
+              : t("Not configured")}
           </small>
           <input
             type="password"
             id="api_key"
             autoComplete="new-password"
-            placeholder="Stored by backend only"
+            placeholder={t("Stored by backend only")}
           />
         </label>
-        <label>
-          Max calls
-          <input
+        <label><LText id="Max calls"/><input
             type="number"
             id="max_calls"
             defaultValue={settings.max_calls || 20}
           />
         </label>
-        <label>
-          Budget (USD)
-          <input
+        <label><LText id="Budget (USD)"/><input
             type="number"
             id="budget_usd"
             defaultValue={settings.budget_usd || 5}
           />
         </label>
-        <label>
-          Input cost / million
-          <input
+        <label><LText id="Input cost / million"/><input
             type="number"
             id="input_cost_per_million"
             defaultValue={settings.input_cost_per_million ?? ""}
           />
         </label>
-        <label>
-          Output cost / million
-          <input
+        <label><LText id="Output cost / million"/><input
             type="number"
             id="output_cost_per_million"
             defaultValue={settings.output_cost_per_million ?? ""}
           />
         </label>
         <div className="toolbar">
-          <button className="primary">Save settings</button>
-          <Btn onClick={test}>Test connection</Btn>
+          <button className="primary"><LText id="Save settings"/></button>
+          <Btn onClick={test}><LText id="Test connection"/></Btn>
         </div>
       </form>
     </Panel>
+    <AlpacaSettings refresh={refresh} />
+    </>
   );
 }
+function AlpacaSettings({ refresh }: any) {
+  const { t } = useLocale();
+  const [state, setState] = useState<Any>({});
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState<Error | string>("");
+  const load = async () => { try { setState(await req("/market/settings")); } catch (e: any) { setError(e instanceof Error ? e : "Unable to read Alpaca settings"); } };
+  useEffect(() => { load(); }, []);
+  const submit = async (e: any) => {
+    e.preventDefault(); const form = e.currentTarget as HTMLFormElement; setBusy(true); setMessage(""); setError("");
+    try {
+      const body = { key_id: value("alpaca_key_id"), secret: value("alpaca_secret") };
+      const saved = await req("/market/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      setState(saved || {}); (form.elements.namedItem("alpaca_key_id") as HTMLInputElement).value = ""; (form.elements.namedItem("alpaca_secret") as HTMLInputElement).value = "";
+      setMessage("Alpaca credentials saved by the local backend. No provider connection was started."); await refresh?.();
+    } catch (e: any) { setError(e instanceof Error ? e : "Could not save Alpaca settings"); }
+    finally { setBusy(false); }
+  };
+  return <Panel title={t("Market data provider · Alpaca")}><p><LText id="Data credentials are separate from the LLM key. They are write-only: this page never reads or displays the key or secret. Saving credentials does not connect to Alpaca."/></p><div className="tag">{t("Status")}: {state.configured ? t("credentials saved") : t("not configured")}</div><form className="settings" onSubmit={submit}><label><LText id="Key ID"/><input type="password" id="alpaca_key_id" autoComplete="new-password" placeholder={state.configured ? t("Enter to replace saved key") : t("Alpaca key ID")} /></label><label><LText id="Secret key"/><input type="password" id="alpaca_secret" autoComplete="new-password" placeholder={t("Stored by backend only")} /></label><div className="toolbar"><button className="primary" disabled={busy}><LText id="Save data credentials"/></button><span><LText id="No connection test runs until you explicitly request data or start an Alpaca collector."/></span></div></form>{message && <div className="notice">{t(message)}</div>}{error && <div className="error"><ErrorMessage error={error}/></div>}</Panel>;
+}
 function Wizard({ step, setStep, close, datasets, experts, submit }: any) {
+  const { t } = useLocale();
+  const [evidencePacks, setEvidencePacks] = useState<Any[]>([]);
+  const [evidenceError, setEvidenceError] = useState<Error | string>("");
+  const [capabilities, setCapabilities] = useState<Any | null>(null);
+  useEffect(() => {
+    let active = true;
+    req("/harness").then((value) => { if (active) setCapabilities(value); }).catch(() => { if (active) setCapabilities(null); });
+    req("/harness/evidence-packs")
+      .then((packs) => { if (active) setEvidencePacks(Array.isArray(packs) ? packs : []); })
+      .catch((error) => { if (active) setEvidenceError(error); });
+    return () => { active = false; };
+  }, []);
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [labMode, setLabMode] = useState<LabMode>("quant_baseline");
+  const [legacyTeam, setLegacyTeam] = useState(false);
+  const supported = legacyTeam || (capabilities?.workflow_version === "score-fusion-v1" && Array.isArray(capabilities?.lab_modes) && capabilities.lab_modes.includes(labMode));
+  const [quant, setQuant] = useState("bt_sma50");
+  const [weights, setWeights] = useState<Weights>(defaultWeights);
+  const [entry, setEntry] = useState("0.25"), [exit, setExit] = useState("-0.25"), [horizon, setHorizon] = useState("5");
   const field = (id: string, fallback = "") =>
     value(id) || draft[id] || fallback;
-  const enabled = (index: number, expert: Any) => {
-    const input = document.getElementById(
-      `enable${index}`,
-    ) as HTMLInputElement | null;
-    const unavailable = (expert.required_data || []).some((d: string) =>
-      /fundamental|financial/i.test(d),
-    );
-    return (
-      !unavailable &&
-      (input ? input.checked : draft[`enable${index}`] !== "false")
-    );
+  const selectedDataset = datasets.find((d: Any) => d.id === field("dataset_id", datasets[0]?.id || "")) || datasets[0] || {};
+  const isTimestampDataset = Number(selectedDataset.schema_version || 1) >= 2;
+  const dateBound = (input: any) => String(input || "").slice(0, 10);
+  const captureForm = (form: HTMLFormElement | null) => {
+    if (!form) return;
+    const values: Record<string, string> = {};
+    Array.from(form.elements).forEach((item: any) => {
+      if (!item.id || !(item instanceof HTMLInputElement || item instanceof HTMLSelectElement || item instanceof HTMLTextAreaElement)) return;
+      values[item.id] = item.type === "checkbox" && item instanceof HTMLInputElement ? String(item.checked) : item.value;
+    });
+    setDraft((old) => ({ ...old, ...values }));
   };
   return (
     <div className="overlay">
       <div className="modal wide">
-        <button className="x" onClick={close}>
+        <button className="x" aria-label={t("Close dialog")} onClick={close}>
           ×
         </button>
         <div className="steps">
-          {["Market & data", "Expert team", "Risk & review"].map(
+          {["Market & data", "four.template", "Risk & review"].map(
             (x: string, i: number) => (
               <span key={i} className={step === i + 1 ? "selected" : ""}>
-                0{i + 1}　{x}
+                0{i + 1}　{t(x)}
               </span>
             ),
           )}
         </div>
         <h2>
-          {
+          {t(
             [
               "Market & data",
-              "Choose your expert team",
+              "four.template",
               "Risk, execution & review",
-            ][step - 1]
+            ][step - 1])
           }
         </h2>
         <form
-          onChange={(e: any) =>
-            e.target.id &&
-            setDraft((old) => ({
-              ...old,
-              [e.target.id]:
-                e.target.type === "checkbox"
-                  ? String(e.target.checked)
-                  : e.target.value,
-            }))
-          }
+          onChange={(e: any) => {
+            if (!e.target.id) return;
+            if (e.target.id === "dataset_id") {
+              const values: Record<string, string> = {};
+              Array.from(e.currentTarget.elements as HTMLFormControlsCollection).forEach((item: any) => {
+                if (!item.id || !(item instanceof HTMLInputElement || item instanceof HTMLSelectElement || item instanceof HTMLTextAreaElement)) return;
+                values[item.id] = item.type === "checkbox" && item instanceof HTMLInputElement ? String(item.checked) : item.value;
+              });
+              setDraft((old) => ({ ...old, ...values, dataset_id: e.target.value, start_date: "", end_date: "", start_at: "", end_at: "" }));
+            } else setDraft((old) => ({ ...old, [e.target.id]: e.target.type === "checkbox" ? String(e.target.checked) : e.target.value }));
+          }}
           onSubmit={async (e: any) => {
             e.preventDefault();
             if (step < 3) {
+              captureForm(e.currentTarget);
               setStep(step + 1);
               return;
             }
+            if (!supported) return alert(t("four.notReady"));
             const d = field("dataset_id", datasets[0]?.id || "");
             if (!d) {
-              return alert("Choose a dataset first.");
+              return alert(t("Choose a dataset first."));
             }
-            const roles = experts.map((x: any, i: number) =>
-              String(
-                field(`role${i}`) || (i === 0 ? "trader" : "advisor"),
-              ).toLowerCase(),
-            );
-            if (
-              roles.filter(
-                (role: string, i: number) =>
-                  role === "trader" && enabled(i, experts[i]),
-              ).length !== 1
-            ) {
-              return alert("Choose exactly one enabled trading lead.");
+            const team = experts.map((x: Any, i: number) => ({expert_id:x.id, role:field(`role${i}`, i === 0 ? "trader" : "advisor"), enabled: field(`enable${i}`, String(!(x.required_data || []).some((d: string) => !["price", "ohlcv"].includes(d.toLowerCase())))) === "true"}));
+            if (legacyTeam && team.filter((member: Any)=>member.enabled && member.role === "trader").length !== 1) return alert(t("Choose exactly one enabled trading lead."));
+            if (!legacyTeam && labMode !== "quant_baseline") {
+              if ((labMode === "multisource_agent" || labMode === "human_supervised") && !validWeights(weights)) return alert(t("four.totalRule"));
+              if (entry.trim() === "" || exit.trim() === "" || horizon.trim() === "" || !Number.isFinite(Number(entry)) || !Number.isFinite(Number(exit)) || Number(entry) > 1 || Number(entry) < -1 || Number(exit) > 1 || Number(exit) < -1 || Number(exit) >= Number(entry) || !Number.isInteger(Number(horizon)) || Number(horizon) < 1) return alert(t("four.invalidPolicy"));
             }
+            const dataMode = isTimestampDataset ? field("market_mode", "historical") : "historical";
+            const dataset = datasets.find((x: Any) => x.id === d) || {};
+            if (dataMode === "live" && Number(dataset.schema_version || 1) < 2) return alert(t("Forward simulation requires a timestamped v2 dataset."));
+            if (dataMode === "live" && (dataset.bar_interval || "1m") !== "1m") return alert(t("The current live collector supports 1-minute bars only. Choose a 1-minute warmup dataset."));
+            if (Number(dataset.schema_version || 1) >= 2 && (!field("start_at") || !field("end_at"))) return alert(t("Choose a timestamp range for the v2 market data."));
             await submit({
               name: field("run_name", "Research run"),
               dataset_id: d,
-              start_date: field("start_date", datasets[0]?.start_date || ""),
-              end_date: field("end_date", datasets[0]?.end_date || ""),
+              start_date: field("start_date", dateBound(dataset.range?.start || dataset.start_date)),
+              end_date: field("end_date", dateBound(dataset.range?.end || dataset.end_date)),
+              schema_version: dataset.schema_version || 1,
+              ...(Number(dataset.schema_version || 1) >= 2 ? {
+                market_mode: dataMode,
+                bar_interval: dataset.bar_interval || "1m",
+                decision_interval: field("decision_interval", "15m"),
+                holding_horizon: field("holding_horizon", "1h"),
+                latency_assumptions: { simulated_latency_ms: Number(field("latency_ms", "0")) },
+              } : {}),
+              ...(Number(dataset.schema_version || 1) >= 2 && field("start_at") ? { start_at: new Date(`${field("start_at")}:00Z`).toISOString() } : {}),
+              ...(Number(dataset.schema_version || 1) >= 2 && field("end_at") ? { end_at: new Date(`${field("end_at")}:00Z`).toISOString() } : {}),
               initial_capital: Number(field("capital") || 100000),
               fee_bps: Number(field("fees") || 0),
               slippage_bps: Number(field("slippage") || 0),
               max_position_weight: Number(field("weight") || 25) / 100,
-              mode: field("mode") || "human_review",
-              strategy: field("strategy") || "agent",
-              team: experts.map((x: any, i: number) => ({
-                expert_id: x.id,
-                role: roles[i],
-                enabled: enabled(i, x),
-              })),
-              provider_mode: field("provider_mode") || "demo",
+              ...(!legacyTeam ? {lab_mode: labMode,
+              quant_strategy: quant,
+              fusion_weights: labMode === "market_agent" || labMode === "quant_baseline" ? {market: 1, news: 0, fundamentals: 0} : fractionalWeights(weights),
+              score_policy: {entry_threshold: Number(entry), exit_threshold: Number(exit), horizon_bars: Number(horizon)},
+              workflow_version: "score-fusion-v1"} : {}),
+              mode: legacyTeam ? field("legacy_mode", "human_review") : labMode === "human_supervised" ? "human_review" : "ai_only",
+              strategy: legacyTeam ? field("legacy_strategy", "agent") : "agent",
+              team: legacyTeam ? team : [],
+              provider_mode: !legacyTeam && labMode === "quant_baseline" ? "demo" : field("provider_mode") || "demo",
+              harness_version: "research-v1",
+              evidence_pack_id: field("evidence_pack_id") || null,
+              ...(true ? {
+                harness_risk: {
+                  min_cash_weight: Number(field("min_cash_weight", "0")) / 100,
+                  max_gross_weight: Number(field("max_gross_weight", "100")) / 100,
+                  max_turnover: Number(field("max_turnover", "200")) / 100,
+                },
+              } : {}),
               max_calls: Number(field("calls") || 20),
               budget_usd: Number(field("budget") || 5),
             });
           }}
         >
           {step === 1 && (
-            <div className="formgrid">
-              <label>
-                Experiment name
-                <input
+            <div className="formgrid" key={selectedDataset.id || "no-dataset"}>
+              <label className="full checkline"><input type="checkbox" checked={legacyTeam} onChange={e=>setLegacyTeam(e.target.checked)}/>{t("four.legacyTeam")}</label>
+              <p className="full notice">{t(legacyTeam ? "four.legacyDescription" : "four.workflow")}</p>
+              <label>{t("Evidence pack (optional)")}<select id="evidence_pack_id" defaultValue={draft.evidence_pack_id || ""}><option value="">{t("Do not use an evidence pack")}</option>{evidencePacks.map((pack: Any) => <option key={pack.id} value={pack.id}>{pack.created_at || t("Date unavailable")} · {pack.id.slice(0, 8)}</option>)}</select><small>{t("Evidence packs are optional and must be imported from Decision workflow first.")}</small>{evidenceError && <small className="error"><ErrorMessage error={evidenceError}/></small>}</label>
+              <label><LText id="Experiment name"/><input
                   id="run_name"
                   defaultValue={draft.run_name || "Research run"}
                 />
               </label>
-              <label>
-                Dataset
-                <select
+              <label><LText id="Dataset"/><select
                   id="dataset_id"
                   defaultValue={draft.dataset_id || datasets[0]?.id || ""}
                 >
-                  <option value="">Select dataset</option>
+                  <option value=""><LText id="Select dataset"/></option>
                   {datasets.map((d: any) => (
                     <option key={d.id} value={d.id}>
                       {d.name}
-                      {d.synthetic ? " · SYNTHETIC DEMO" : ""}
+                      {d.synthetic ? ` · ${t("Synthetic demo")}` : ""}
                     </option>
                   ))}
                 </select>
+                <small><LText id="For intraday experiments, choose a timestamped v2 dataset with a matching bar interval."/></small>
               </label>
-              <label>
-                Start date
-                <input
+              <label><LText id="Chart bar period"/><input value={selectedDataset.bar_interval || (Number(selectedDataset.schema_version || 1) >= 2 ? "1m" : "1d")} readOnly /><small><LText id="Inherited from this dataset. The chart does not resample bars."/></small></label>
+              {isTimestampDataset ? <>
+                <label><LText id="Data mode"/><select id="market_mode" defaultValue={draft.market_mode || "historical"}><option value="historical"><LText id="Historical replay"/></option><option value="live"><LText id="Forward simulation"/></option></select><small><LText id="Forward simulation needs a 1-minute warmup dataset and a separate collector. It never places real orders."/></small></label>
+                <label><LText id="Decision interval"/><select id="decision_interval" defaultValue={draft.decision_interval || "15m"}><option value="15m"><LText id="Every 15 minutes"/></option><option value="1h"><LText id="Every hour"/></option><option value="1d"><LText id="Every 1 elapsed day"/></option><option value="7d"><LText id="Every 7 elapsed days"/></option></select><small><LText id="How often the experiment may decide. Independent of chart bars."/></small></label>
+                <label><LText id="Holding horizon"/><select id="holding_horizon" defaultValue={draft.holding_horizon || "1h"}><option value="1h"><LText id="About 1 hour"/></option><option value="4h"><LText id="About 4 hours"/></option><option value="1d"><LText id="About 1 day"/></option><option value="7d"><LText id="About 7 days"/></option><option value="30d"><LText id="About 30 days"/></option></select><small><LText id="Enforced elapsed UTC duration. Expiry submits a cash exit at the first eligible later bar; market closures can extend the actual time."/></small></label>
+                <label><LText id="Simulated decision latency (ms)"/><input id="latency_ms" type="number" min="0" max="60000" step="100" defaultValue={draft.latency_ms || "0"} /><small><LText id="Deterministic timing assumption. No LLM call is made."/></small></label>
+              </> : <p className="full notice"><LText id="Daily legacy dataset: its existing daily replay behavior is unchanged. Intraday decision intervals, holding horizons, and latency settings are unavailable for this dataset."/></p>}
+              <label><LText id="Start date"/><input
                   id="start_date"
                   type="date"
                   required
-                  defaultValue={draft.start_date || datasets[0]?.start_date}
+                  defaultValue={draft.start_date || dateBound(selectedDataset.range?.start || selectedDataset.start_date)}
                 />
               </label>
-              <label>
-                End date
-                <input
+              <label><LText id="End date"/><input
                   id="end_date"
                   type="date"
                   required
-                  defaultValue={draft.end_date || datasets[0]?.end_date}
+                  defaultValue={draft.end_date || dateBound(selectedDataset.range?.end || selectedDataset.end_date)}
                 />
               </label>
-              <label>
-                Replay strategy
-                <select id="strategy">
-                  <option value="agent">Agent</option>
-                  <option value="momentum">Momentum baseline</option>
-                  <option value="buy_hold">Buy and hold baseline</option>
-                </select>
-              </label>
-              <label>
-                Provider mode
-                <select id="provider_mode">
-                  <option value="demo">Deterministic demo strategy</option>
-                  <option value="llm">Configured LLM</option>
-                </select>
-                <small>Demo runs do not represent LLM results.</small>
-              </label>
+              {Number(selectedDataset.schema_version || 1) >= 2 && <><label><LText id="Start time (UTC)"/><input id="start_at" type="datetime-local" required defaultValue={draft.start_at || String(selectedDataset.range?.start || "").slice(0, 16)} /></label><label><LText id="End time (UTC)"/><input id="end_at" type="datetime-local" required defaultValue={draft.end_at || String(selectedDataset.range?.end || "").slice(0, 16)} /></label></>}
+
             </div>
           )}
-          {step === 2 && (
-            <>
-              <p>
-                One trading lead creates the final order plan; advisors
-                contribute opinions only.
-              </p>
-              <div className="expertgrid">
-                {experts.map((x: any, i: number) => (
-                  <Panel key={x.id}>
-                    <ExpertBadge ex={x} role={x.role} />
-                    {((x.required_data || []) as string[]).some((d) =>
-                      /fundamental|financial/i.test(d),
-                    ) && (
-                      <div className="error compact">
-                        Required fundamentals are unavailable in this OHLCV
-                        dataset. This expert is disabled.
-                      </div>
-                    )}
-                    <label>
-                      Role
-                      <select
-                        id={`role${i}`}
-                        defaultValue={
-                          draft[`role${i}`] || (i === 0 ? "trader" : "advisor")
-                        }
-                      >
-                        <option value="trader">Trader</option>
-                        <option value="advisor">Advisor</option>
-                      </select>
-                    </label>
-                    <label className="checkline">
-                      <input
-                        id={`enable${i}`}
-                        type="checkbox"
-                        defaultChecked={
-                          !(x.required_data || []).some((d: string) =>
-                            /fundamental|financial/i.test(d),
-                          )
-                        }
-                        disabled={(x.required_data || []).some((d: string) =>
-                          /fundamental|financial/i.test(d),
-                        )}
-                      />
-                      Enable for this run
-                    </label>
-                    <p>
-                      <small>
-                        Requires: {(x.required_data || []).join(", ")}
-                      </small>
-                    </p>
-                  </Panel>
-                ))}
-              </div>
-            </>
-          )}
+          {step === 2 && <>{legacyTeam ? <><p>{t("four.legacyDescription")}</p><label>{t("Replay strategy")}<select id="legacy_strategy" defaultValue={draft.legacy_strategy || "agent"}><option value="agent">{t("Agent")}</option><option value="momentum">{t("Momentum baseline")}</option><option value="buy_hold">{t("Buy and hold baseline")}</option></select></label><div className="expertgrid">{experts.map((x:Any,i:number)=>{const unavailable=(x.required_data || []).some((d:string)=>!["price","ohlcv"].includes(d.toLowerCase())); return <Panel key={x.id}><ExpertBadge ex={x} role={x.role}/>{unavailable && <p className="error compact">{t("Required fundamentals are unavailable in this OHLCV dataset. This expert is disabled.")}</p>}<label>{t("Role")}<select id={`role${i}`} defaultValue={draft[`role${i}`] || (i===0 ? "trader" : "advisor")}><option value="trader">{t("Trader")}</option><option value="advisor">{t("Advisor")}</option></select></label><label className="checkline"><input id={`enable${i}`} type="checkbox" disabled={unavailable} defaultChecked={!unavailable && draft[`enable${i}`] !== "false"}/>{t("Enable for this run")}</label></Panel>})}</div></> : <ModeSettings mode={labMode} setMode={setLabMode} quant={quant} setQuant={setQuant} weights={weights} setWeights={setWeights} entry={entry} setEntry={setEntry} exit={exit} setExit={setExit} horizon={horizon} setHorizon={setHorizon}/>}{(legacyTeam || labMode !== "quant_baseline") && <label><LText id="Provider mode"/><select id="provider_mode" defaultValue={draft.provider_mode || "demo"}><option value="demo"><LText id="Deterministic demo strategy"/></option><option value="llm"><LText id="Configured LLM"/></option></select><small><LText id="Demo runs do not represent LLM results."/></small></label>}</>}
           {step === 3 && (
             <div className="formgrid">
-              <label>
-                Initial simulated capital ($)
-                <input
+              <label><LText id="Initial simulated capital ($)"/><input
                   id="capital"
                   type="number"
                   defaultValue={draft.capital || "100000"}
                 />
               </label>
-              <label>
-                Maximum position weight (%)
-                <input
+              <label><LText id="Maximum position weight (%)"/><input
                   id="weight"
                   type="number"
                   min="1"
@@ -1992,59 +1983,47 @@ function Wizard({ step, setStep, close, datasets, experts, submit }: any) {
                   defaultValue={draft.weight || "25"}
                 />
               </label>
-              <label>
-                Fee (basis points)
-                <input
+              <label><LText id="Fee (basis points)"/><input
                   id="fees"
                   type="number"
                   defaultValue={draft.fees || "10"}
                 />
               </label>
-              <label>
-                Slippage (basis points)
-                <input
+              <label><LText id="Slippage (basis points)"/><input
                   id="slippage"
                   type="number"
                   defaultValue={draft.slippage || "5"}
                 />
               </label>
-              <label>
-                Human oversight
-                <select id="mode">
-                  <option value="human_review">
-                    Review every proposed order
-                  </option>
-                  <option value="ai_only">AI only</option>
-                </select>
-              </label>
-              <label>
-                Maximum model calls
-                <input
+              {legacyTeam ? <label><LText id="Human oversight"/><select id="legacy_mode" defaultValue={draft.legacy_mode || "human_review"}><option value="human_review">{t("Review every proposed order")}</option><option value="ai_only">{t("AI only")}</option></select></label> : <p className="full notice">{t(labMode === "human_supervised" ? "four.reviewMode" : "four.autoMode")}</p>}
+              <label><LText id="Maximum model calls"/><input
                   id="calls"
                   type="number"
                   defaultValue={draft.calls || "20"}
                 />
               </label>
-              <label>
-                Budget (USD)
-                <input
+              <label><LText id="Budget (USD)"/><input
                   id="budget"
                   type="number"
                   defaultValue={draft.budget || "5"}
                 />
               </label>
-              <p className="full">
-                Simulated portfolios only. Approved orders queue for eligible
-                next-session execution. Run configuration is frozen at launch.
-              </p>
+              {<>
+                <label><LText id="Minimum cash weight (%)"/><input id="min_cash_weight" type="number" min="0" max="100" step="0.1" required defaultValue={draft.min_cash_weight ?? "0"}/></label>
+                <label><LText id="Maximum gross target exposure (%)"/><input id="max_gross_weight" type="number" min="0" max="100" step="0.1" required defaultValue={draft.max_gross_weight ?? "100"}/></label>
+                <label><LText id="Maximum L1 turnover (%)"/><input id="max_turnover" type="number" min="0" max="200" step="0.1" required defaultValue={draft.max_turnover ?? "200"}/><small><LText id="L1 turnover sums absolute asset-weight changes. Moving entirely between two assets can reach 200%."/></small></label>
+                <p className="full muted"><LText id="Research workflow risk limits apply to this new experiment. Existing experiment configurations stay frozen."/></p>
+              </>}
+              <p className="full"><LText id="Simulated portfolios only. Approved orders queue for eligible next-session execution. Run configuration is frozen at launch."/> </p>
             </div>
           )}
           <div className="toolbar end">
-            <Btn onClick={() => (step === 1 ? close() : setStep(step - 1))}>
-              {step === 1 ? "Cancel" : "Back"}
+            <Btn onClick={(e: any) => { if (step === 1) close(); else { captureForm(e.currentTarget.closest("form")); setStep(step - 1); } }}>
+              {t(step === 1 ? "Cancel" : "Back")}
             </Btn>
-            <button className="primary">
-              {step === 3 ? "Launch experiment" : "Continue →"}
+            {step === 3 && !supported && <span className="error">{t("four.notReady")}</span>}
+            <button className="primary" disabled={step === 3 && !supported}>
+              {t(step === 3 ? "Launch experiment" : "Continue →")}
             </button>
           </div>
         </form>
@@ -2053,13 +2032,14 @@ function Wizard({ step, setStep, close, datasets, experts, submit }: any) {
   );
 }
 function ExpertForm({ close, save }: any) {
+  const { t } = useLocale();
   return (
     <div className="overlay">
       <div className="modal">
-        <button className="x" onClick={close}>
+        <button className="x" aria-label={t("Close dialog")} onClick={close}>
           ×
         </button>
-        <h2>Create expert card</h2>
+        <h2><LText id="Create expert card"/></h2>
         <form
           onSubmit={async (e: any) => {
             e.preventDefault();
@@ -2079,38 +2059,24 @@ function ExpertForm({ close, save }: any) {
           }}
           className="settings"
         >
-          <label>
-            Name
-            <input id="exname" required />
+          <label><LText id="Name"/><input id="exname" required />
           </label>
-          <label>
-            Default role
-            <select id="exrole">
-              <option>Advisor</option>
-              <option>Trader</option>
+          <label><LText id="Default role"/><select id="exrole">
+              <option value="Advisor"><LText id="Advisor"/></option>
+              <option value="Trader"><LText id="Trader"/></option>
             </select>
           </label>
-          <label>
-            Horizon
-            <input id="horizon" />
+          <label><LText id="Horizon"/><input id="horizon" />
           </label>
-          <label>
-            Objective
-            <textarea id="objective" required />
+          <label><LText id="Objective"/><textarea id="objective" required />
           </label>
-          <label>
-            Required data
-            <input id="required_data" defaultValue="OHLCV" />
+          <label><LText id="Required data"/><input id="required_data" defaultValue="OHLCV" />
           </label>
-          <label>
-            Analysis instructions
-            <textarea id="instructions" />
+          <label><LText id="Analysis instructions"/><textarea id="instructions" />
           </label>
-          <label>
-            Risk constraints
-            <textarea id="risk_notes" />
+          <label><LText id="Risk constraints"/><textarea id="risk_notes" />
           </label>
-          <button className="primary">Save version 1</button>
+          <button className="primary"><LText id="Save version 1"/></button>
         </form>
       </div>
     </div>
@@ -2124,4 +2090,10 @@ function value(id: string) {
     )?.value || ""
   );
 }
-createRoot(document.getElementById("root")!).render(<AuthGate><App /></AuthGate>);
+function formatMarketTime(input: string, locale: "en" | "zh-CN") {
+  const date = new Date(input);
+  if (!Number.isFinite(date.getTime())) return input;
+  const options: Intl.DateTimeFormatOptions = { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+  return `${new Intl.DateTimeFormat(locale, { ...options, timeZone: "America/New_York" }).format(date)} ET / ${new Intl.DateTimeFormat(locale, { ...options, timeZone: "Asia/Shanghai" }).format(date)} ${locale === "en" ? "Beijing" : "北京时间"}`;
+}
+createRoot(document.getElementById("root")!).render(<LocaleProvider><AuthGate><App /></AuthGate></LocaleProvider>);

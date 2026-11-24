@@ -4,11 +4,25 @@
 
 Implement the full functional scope in `outputs/PROJECT_CONSTRAINTS.md` and `outputs/UI_FUNCTIONAL_SPEC.md`. Figma file BsofDaCgRV8EEuRR5r2z0m, final main frame 4:1457. Approved native exports `outputs/figma-*.png` are visual targets; `work/figma-local/code.js` contains the editable design source and exact pixel portrait maps. Never render a full UI screenshot as an app asset. Official Figma access was exhausted during design; native source and verified exports remain available.
 
+## Authoritative trading-style rule (user confirmed 2026-11-23)
+
+`outputs/PROJECT_CONSTRAINTS.md` §13 supersedes earlier style/fusion guidance in this contract. This is a confirmed requirement; runtime migration is not yet implemented or verified.
+
+- Use one style-control point: shared analyst evidence → main trading LLM conditioned by the card in its actual **system message** → deterministic risk checks → optional human review → simulated execution.
+- Compile card objectives, evidence preferences, action/wait/exit principles and uncertainty handling into that system message. Display-only metadata or a style card supplied only in a user message does not satisfy this requirement.
+- Analysts retain the same evidence protocol across styles. Do not add style-specific source/factor weights, weighted-score trading thresholds, or another directional/style transformation before or after the main LLM decision. Target portfolio weights produced by the LLM remain valid outputs.
+- The final proposal-producing LLM must be the sole style-conditioned decision point. If reusing the existing coordinator as that point, do not also inject style into an upstream trader; do not let a separate unconditioned coordinator freely rewrite a style-conditioned decision.
+- Preserve programmatic cash, position, exposure, concentration, turnover, data-availability and execution checks. Use the same limits across style comparisons. Any budgeted risk-revision call retains the same trading role and system-prompt version. Human changes remain separately audited.
+- Freeze and audit the effective card version, full effective system-prompt snapshot and version/hash, model, point-in-time inputs and raw output. Activate card changes only at the next new decision boundary.
+- Retain immutable historical weighted experiments and explicitly separate deterministic baselines. Never silently fall back to either when an LLM call fails. Existing fusion APIs below describe the historical path, not the new style mechanism.
+- Acceptance for a future implementation must inspect the dispatched system messages, verify analyst inputs/prompts stay independent of style, exclude stacked style weighting, and preserve hard-risk enforcement and experiment isolation. This documentation change alone does not satisfy runtime acceptance.
+
 ## Stack / ownership
 
-- `frontend/`: React + TypeScript + Vite, maintained by frontend agent (Luna high).
-- `backend/app/engine.py`, `backend/app/engine_tests/`: pure trading runtime, owned by logic agent (Luna max).
-- Other `backend/` files: FastAPI, SQLite persistence, LLM adapter, data import, API, backend integration tests, owned by backend agent (Luna high).
+- All sub-agents use GPT-6.1 Sol with extra-high reasoning (`gpt-6.1-sol`, `xhigh`), per the user's latest 2026-11-10 instruction; this supersedes prior Luna and Terra assignments.
+- `frontend/`: React + TypeScript + Vite, maintained by the frontend agent.
+- `backend/app/engine.py`, `backend/app/engine_tests/`: pure trading runtime, owned by the logic agent.
+- Other `backend/` files: FastAPI, SQLite persistence, LLM adapter, data import, API, backend integration tests, owned by the backend agent.
 - Parent owns root scripts, documentation, integration review and browser acceptance. Do not edit another owner's files without coordination.
 - Local-first single-user research workspace. SQLite is a reversible startup choice; avoid external DB prerequisites. Persist business state and datasets. No real brokerage integration.
 
@@ -38,3 +52,25 @@ Functions: `create_state(config,bars)`, `advance_market(state,bars)`, `visible_s
 ## Mandatory acceptance
 
 Meaningful tests for future-data exclusion, next-open fills, fees/slippage, cash/position limits, missing bars, final-session orders, idempotent reviews, original-AI preservation, scheduled expert changes, experiment isolation, metrics, invalid LLM output and secret exclusion. Frontend production build + real browser workflows: import data, create experiment, run/step, review all three actions, experts, settings failure/success state, reports/export, navigation and scrolling. Do not claim live LLM validation without actual credentials and response evidence.
+
+
+## Research workflow and UI extension (2026-11-10)
+
+- New experiment configuration accepts `harness_version`, `evidence_pack_id`, and `harness_risk`. API default remains `legacy-v1`; the website explicitly chooses `research-v1` for its new workflow. Existing experiment configurations and saved results are retained.
+- `harness_risk` uses fractional weights: `min_cash_weight` (default 0), `max_gross_weight` (default 1), `max_turnover` (L1, default 2), `max_sector_weight` (default 1), and optional `sectors`. The wizard exposes the first three as percentages; sector mapping remains available through the API.
+- Evidence packs are immutable. JSONL upload keeps the complete indexed history; model context is bounded and reports selected/eligible coverage. Fixed-precision UTC indexes are derived from source timestamps without changing original record hashes.
+- The research workflow joins evidence, structured proposals/citations, deterministic risk checks, at most one budgeted revision, and the existing human review/execution path. Historical execution uses next eligible open; live simulation preserves its existing next observed close rule. No live brokerage orders.
+- See `docs/research/harness/RESEARCH_AND_IMPLEMENTATION.md` for literature, statistical definitions, tests and limits. Historical ES is descriptive, not a calibrated risk forecast.
+- UI language uses explicit catalogs and preserves user/model/source content. Long collections use actual-overflow-aware `ScrollRegion`; see `docs/I18N_ACCEPTANCE.md` and `docs/SCROLL_LISTS_ACCEPTANCE.md` for acceptance coverage.
+
+## Four-mode integration (2026-11-10)
+
+Historical implementation / compatibility contract. For the newly confirmed style-LLM path, the authoritative 2026-11-23 rule above takes precedence; do not combine this section's fusion mechanism with style prompting.
+
+New experiment templates use `lab_mode`, `quant_strategy`, `fusion_weights` and `score_policy`. `GET /api/harness` declares available templates and defaults. Existing configurations with no lab_mode retain their original execution path. See `FOUR_MODE_CONTRACT.md` for stable fields, initial parameters, analyst isolation, allocation and execution rules.
+
+`GET /api/experiments/{id}/analysis` exposes actual analysis records and intervention summaries. `POST /api/experiments/{id}/weights` accepts a reasoned change for the human-supervised template, applies it at the next new decision, and preserves the immutable initial configuration and historical suggestions. JSON and CSV exports include both intervention classes.
+
+The new analyst protocol preserves structured outputs, input snapshots, time cutoffs, source-specific citations and prompt versions while using the existing budget and checkpoint mechanism. Programmatic fusion produces a single proposal. Preserved symbols retain quantities through execution, and human modifications supply complete desired targets.
+
+Open-source quant components and their license are retained under `backend/app/vendor/`. The Lab executor handles orders and accounting. `FOUR_MODE_ACCEPTANCE.md` records synthetic and mocked-provider validation separately from real-provider and real-feed verification.
