@@ -2,6 +2,137 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 export type Locale = "en" | "zh-CN";
 type Params = Record<string, string | number>;
 const catalog: Record<string, [string, string]> = {
+  "activity.kind.replay_completed": ["Replay completed", "回放完成"],
+  "activity.summary.replay_completed": ["Replay reached its last recorded time point.", "历史回放已到最后一个时间点。"],
+  "activity.kind.final_session_order_pending": ["Unfilled order at end", "回放结束时仍有订单"],
+  "activity.summary.final_session_order_pending": ["Some orders remain unfilled because the replay data has ended.", "数据范围已结束，仍有订单没有成交。"],
+  "activity.kind.final_session_orders_pending": ["Unfilled orders at end", "回放结束时仍有订单"],
+  "activity.summary.final_session_orders_pending": ["Some orders remain unfilled because the replay data has ended.", "数据范围已结束，仍有订单没有成交。"],
+  "activity.kind.order_waiting_for_bars": ["Waiting for prices", "等待行情"],
+  "activity.summary.order_waiting_for_bars": ["The order is waiting for available price data.", "这笔订单正在等待可用行情。"],
+  "activity.kind.order_unfilled": ["Order unfilled", "订单未成交"],
+  "activity.summary.order_unfilled": ["This simulated order has not been filled.", "这笔模拟订单没有完成成交。"],
+  "activity.kind.missing_market_bars": ["Missing prices", "行情缺失"],
+  "activity.summary.missing_market_bars": ["Price data is missing at this time point.", "这个时间点缺少可用行情。"],
+  "activity.kind.team_activated": ["Team activated", "团队已启用"],
+  "activity.summary.team_activated": ["The new team settings have taken effect.", "新的团队设置已开始生效。"],
+  "activity.kind.team_change_scheduled": ["Team change scheduled", "已安排团队调整"],
+  "activity.summary.team_change_scheduled": ["New team settings will apply at the next trading decision.", "新的团队设置将在下次作出交易决定时生效。"],
+  "activity.kind.team_change_replaced": ["Team change updated", "团队调整已更新"],
+  "activity.summary.team_change_replaced": ["A pending team adjustment was updated.", "更新了还未生效的团队调整。"],
+  "activity.kind.decision_modified": ["Proposal changed", "已修改建议"],
+  "activity.summary.decision_modified": ["The original trade proposal was changed.", "修改了原有交易建议。"],
+  "activity.kind.order_remainder_cancelled": ["Remaining order cancelled", "取消剩余订单"],
+  "activity.summary.order_remainder_cancelled": ["The unfilled part of the order was cancelled.", "取消了这笔订单尚未成交的部分。"],
+  "activity.kind.position_limit_unenforceable_missing_bar": ["Position check blocked", "仓位检查受阻"],
+  "activity.summary.position_limit_unenforceable_missing_bar": ["Missing prices prevent a complete check of the position limit.", "缺少股票价格，暂时无法完整检查仓位上限。"],
+  "activity.kind.preserved_position_limit_exceeded": ["Position exceeds limit", "持仓超出上限"],
+  "activity.summary.preserved_position_limit_exceeded": ["An existing holding exceeds its configured position limit. Open details to review it.", "已有持仓超过了设定的仓位上限，请查看详情。"],
+  "data.unavailable": ["Dataset unavailable", "数据集不可用"],
+  "data.synthetic": ["Generated demo prices", "虚拟价格"],
+  "data.apple": ["Apple AAPL", "苹果 AAPL"],
+  "data.stocks": ["{count} stocks", "{count} 只股票"],
+  "data.daily": ["Daily", "日线"],
+  "data.minute": ["1-minute bars", "1 分钟线"],
+  "data.hourly": ["Hourly", "小时线"],
+  "data.requirement.price": ["Market prices", "行情"],
+  "data.requirement.news": ["News", "新闻"],
+  "data.requirement.fundamentals": ["Financials", "财务"],
+  "data.missing": ["This dataset does not provide: {data}.", "当前数据集缺少：{data}。"],
+  "data.disabled": ["Disabled", "已停用"],
+  "data.inventory": ["{count} datasets · {imports} import records", "{count} 类数据 · {imports} 条导入记录"],
+  "data.copies": ["{count} imports of the same data", "同一数据导入了 {count} 份"],
+  "data.details": ["Import details", "导入详情"],
+  "data.imported": ["Imported prices", "导入行情"],
+  "data.type": ["Data type", "数据类型"],
+  "copy.demoHelp": ["Runs preset rules without calling an AI model.", "按预设规则运行，不使用 AI。"],
+  "copy.ruleMode": ["Rule-based run", "规则运行"],
+  "copy.aiHelp": ["Uses the configured AI model to analyse data and propose trades.", "由已配置的 AI 分析数据并提出交易建议。"],
+  "copy.virtualHelp": ["These prices were generated for trying the app. They are not real market prices.", "这些价格由程序生成，供体验功能使用，不是真实市场行情。"],
+  "copy.comparingTitle": ["Before comparing", "比较前先检查"],
+  "copy.comparing": ["Use the same stocks, dates, starting cash and trading fees when comparing strategies. All trades use simulated money.", "这里使用模拟资金。比较不同策略时，请让股票、日期、起始资金和手续费保持一致。"],
+  "copy.comparisonDifference": ["These runs use different settings or end dates. Their returns cannot tell us the effect of human review alone.", "这些实验的设置或结束日期不同，不能只看收益就判断人工审核有没有帮助。"],
+  "copy.comparisonReady": ["The main run settings match. Read the results together with the experiment settings.", "主要运行条件已核对一致，请结合实验设置查看结果。"],
+  "metric.sharpe": ["Return / volatility", "收益与波动比"],
+  "metric.sharpeHelp": ["Higher means more past return for the same amount of return fluctuation (Sharpe ratio).", "把收益和起伏放在一起看：数字越高，表示在同样波动下获得的历史收益越多。"],
+  "metric.calculation": ["How this number is calculated", "这个数字怎么算"],
+  "metric.calculationDetail": ["The return-to-volatility score is the Sharpe ratio. It uses daily portfolio returns, 252 trading sessions per year, sample standard deviation and a risk-free rate of zero. The score is unavailable when there are too few returns or no measurable volatility.", "这个比值的正式名称是夏普比率。用每天的账户收益计算，按一年 252 个交易日换算，使用样本标准差，并假设无风险收益为 0。记录不足或没有可计算的波动时，显示“—”。"],
+  "metric.volatility": ["Return swings (annualized)", "收益起伏（年化）"],
+  "metric.volatilityHelp": ["Larger percentages mean larger return swings. Longer bars show larger swings within this comparison.", "百分比越大，收益的起伏越大；同一张比较表里，色条越长表示起伏越大。"],
+  "chart.30PerScreen": ["30 per screen", "每屏 30 根"],
+  "chart.60PerScreen": ["60 per screen", "每屏 60 根"],
+  "chart.scrollRegion": ["Price chart; scroll sideways for earlier or later candles", "价格图表，可左右移动查看历史 K 线"],
+  "chart.earlier": ["Earlier candles", "查看更早的 K 线"],
+  "chart.later": ["Later candles", "查看更晚的 K 线"],
+  "chart.pan": ["Move along candle history", "左右移动 K 线"],
+  "chart.latest": ["Latest", "回到最新"],
+  "activity.title": ["Recent actions", "最近操作"],
+  "activity.page": ["Page {current} / {pages} · {count} records", "第 {current} / {pages} 页 · 共 {count} 条记录"],
+  "activity.previous": ["Previous page", "上一页"],
+  "activity.next": ["Next page", "下一页"],
+  "activity.time": ["Time (Beijing)", "时间（北京时间）"],
+  "activity.action": ["Action", "操作"],
+  "activity.description": ["What happened", "发生了什么"],
+  "activity.unnamed": ["Unnamed experiment", "未命名实验"],
+  "activity.workspace": ["Workspace", "工作区"],
+  "activity.details": ["View details", "查看详情"],
+  "activity.raw": ["Original record", "原始记录"],
+  "activity.recorded": ["An action was recorded.", "记录了一项操作。"],
+  "activity.replayDate": ["Replay date", "回放日期"],
+  "activity.symbol": ["Stock", "股票"],
+  "activity.quantity": ["Quantity", "数量"],
+  "activity.price": ["Price", "价格"],
+  "activity.reason": ["Explanation", "说明"],
+  "activity.error": ["The run encountered a problem:", "运行遇到问题："],
+  "activity.review.approve": ["The trade proposal was approved.", "已同意这条交易建议。"],
+  "activity.review.modify": ["The trade proposal was changed before approval.", "已修改这条交易建议。"],
+  "activity.review.reject": ["The trade proposal was rejected.", "已拒绝这条交易建议。"],
+  "activity.ruleDecision": ["Preset rules generated a trade proposal.", "按预设规则生成了一条交易建议。"],
+  "activity.aiDecision": ["AI generated a trade proposal.", "AI 生成了一条交易建议。"],
+  "activity.decision": ["A trade proposal was generated.", "生成了一条交易建议。"],
+  "activity.imported": ["Imported {count} price records.", "导入了 {count} 条行情。"],
+  "activity.summary.paused": ["The experiment was paused.", "已暂停运行实验。"],
+  "activity.summary.resumed": ["The experiment continued from where it stopped.", "已从上次停止的位置继续运行。"],
+  "activity.summary.run_started": ["The experiment started running.", "已开始运行实验。"],
+  "activity.summary.experiment_created": ["A new experiment was created.", "创建了一个新实验。"],
+  "activity.summary.experiment_branched": ["A separate experiment was created from an existing run.", "从已有实验创建了一个独立的新实验。"],
+  "activity.summary.team_scheduled": ["Team changes will apply at the next trading decision.", "已更新团队，将在下次作出交易决定时生效。"],
+  "activity.summary.settings_updated": ["Application settings were updated.", "更新了应用设置。"],
+  "activity.summary.expert_created": ["A new expert card was created.", "创建了一张新的专家卡片。"],
+  "activity.summary.recovered_after_restart": ["The service restarted. This experiment is paused and can be continued.", "服务重启后，实验已暂停，可以继续运行。"],
+  "activity.errorSummary": ["The run encountered a problem. Open details to see the cause.", "运行遇到问题，请打开详情查看原因。"],
+  "activity.otherAction": ["Other action", "其他操作"],
+  "activity.kind.market_session_advanced": ["Replay advanced", "回放推进"],
+  "activity.kind.decision_auto_approved": ["Automatically approved", "自动通过"],
+  "activity.kind.decision_created": ["Proposal created", "生成建议"],
+  "activity.kind.live_decision_created": ["Proposal created", "生成建议"],
+  "activity.kind.decision_reviewed": ["Manual review", "人工审核"],
+  "activity.kind.decision_awaiting_review": ["Waiting for review", "等待审核"],
+  "activity.kind.decision_approved": ["Review approved", "审核通过"],
+  "activity.kind.decision_rejected": ["Proposal rejected", "建议未通过"],
+  "activity.kind.order_queued": ["Order queued", "等待成交"],
+  "activity.kind.order_filled": ["Order filled", "订单成交"],
+  "activity.kind.order_partially_filled": ["Partially filled", "部分成交"],
+  "activity.kind.experiment_created": ["Experiment created", "新建实验"],
+  "activity.kind.experiment_branched": ["Experiment copied", "创建独立实验"],
+  "activity.kind.dataset_imported": ["Prices imported", "导入行情"],
+  "activity.kind.market_dataset_imported": ["Prices imported", "导入行情"],
+  "activity.kind.expert_created": ["Expert created", "新建专家"],
+  "activity.kind.settings_updated": ["Settings updated", "修改设置"],
+  "activity.kind.error": ["Run error", "运行出错"],
+  "activity.kind.run_started": ["Run started", "开始运行"],
+  "activity.kind.paused": ["Paused", "暂停运行"],
+  "activity.kind.resumed": ["Resumed", "继续运行"],
+  "activity.kind.team_scheduled": ["Team updated", "调整团队"],
+  "activity.kind.recovered_after_restart": ["Service restarted", "服务重启"],
+  "activity.summary.market_session_advanced": ["Replay moved to the next recorded time point.", "回放推进到了下一个已记录的时间点。"],
+  "activity.summary.decision_auto_approved": ["The proposal was automatically approved under this experiment's settings.", "按实验设置，自动通过了这条建议。"],
+  "activity.summary.decision_awaiting_review": ["A trade proposal is waiting for your review.", "有一条交易建议正在等你审核。"],
+  "activity.summary.decision_approved": ["The trade proposal passed review.", "这条交易建议已通过审核。"],
+  "activity.summary.decision_rejected": ["This trade proposal will not be executed.", "没有执行这条交易建议。"],
+  "activity.summary.order_queued": ["The order is waiting for the next eligible execution time.", "订单已保存，正在等待符合条件的成交时点。"],
+  "activity.summary.order_filled": ["A simulated order was filled.", "一笔模拟订单已成交。"],
+  "activity.summary.order_partially_filled": ["Part of the order has been filled in the simulation.", "订单已有一部分完成模拟成交。"],
   "desk.expandChart": ["Expand {symbol} chart", "展开 {symbol} 图表"],
   "desk.collapseChart": ["Collapse {symbol} chart", "收起 {symbol} 图表"],
   "desk.expand": ["Expand", "展开"],
@@ -40,7 +171,7 @@ const catalog: Record<string, [string, string]> = {
   "four.independentModules": ["This template uses its configured independent analysis modules or quantitative baseline; expert cards do not alter this run.", "该模板使用配置的独立分析模块或量化基准，专家卡片不会改变本次实验。"],
   "enum.bt_sma50": ["SMA 50", "50 周期简单移动平均"],
   "enum.bt_buy_hold": ["Buy and hold", "买入并持有"],
-  "four.syntheticFixture": ["Synthetic fixture; deterministic demo, not an LLM result", "合成数据样例；确定性演示，非 LLM 结果"],
+  "four.syntheticFixture": ["Generated demo prices; no AI calls","虚拟价格演示，不使用 AI"],
   "four.newWeights": ["New weights", "新权重"],
   "four.previousWeights": ["Previous weights", "原权重"],
   "four.requestedAt": ["Requested at", "提出时间"],
@@ -52,7 +183,7 @@ const catalog: Record<string, [string, string]> = {
   "four.completedChanges": ["Effective adjustments", "已生效调权"],
   "enum.started": ["in progress", "进行中"],
   "four.quantDetails": ["Quantitative baseline record", "量化基准记录"],
-  "four.deterministicBaseline": ["Deterministic strategy; no LLM call", "确定性策略，不调用 LLM"],
+  "four.deterministicBaseline": ["Preset trading rules; no AI calls","按预设规则交易，不使用 AI"],
   "four.upstream": ["Recorded upstream", "记录的上游来源"],
   "four.commit": ["Commit", "版本提交"],
   "four.selectedSymbols": ["Selected symbols", "选中标的"],
@@ -81,7 +212,7 @@ const catalog: Record<string, [string, string]> = {
   "four.market_agent": ["Market agent", "行情 Agent"],
   "four.multisource_agent": ["Multisource agent", "多源 Agent"],
   "four.human_supervised": ["Human-supervised agent", "人机协同 Agent"],
-  "four.quant_baseline.description": ["Deterministic open-source strategy, automatic simulated execution.", "确定性开源策略，自动模拟执行。"],
+  "four.quant_baseline.description": ["Follow preset stock-selection rules and simulate trades automatically.","按预设的选股规则，自动进行模拟交易。"],
   "four.market_agent.description": ["Market analysis only, automatic simulated execution.", "仅使用行情分析，自动模拟执行。"],
   "four.multisource_agent.description": ["Market, news and financial analysis with frozen weights; automatic simulated execution.", "融合行情、新闻和财务分析，权重冻结，自动模拟执行。"],
   "four.human_supervised.description": ["Multisource analysis with weight adjustments and review of each proposed order.", "多源分析，可调权并逐笔审核交易建议。"],
@@ -123,8 +254,8 @@ const catalog: Record<string, [string, string]> = {
   "four.citations": ["Citations", "引用"],
   "four.uncertainty": ["Uncertainty · original", "不确定性 · 原文"],
   "four.targets": ["Rule-calculated targets", "规则计算目标仓位"],
-  "four.demo": ["Deterministic demo; not an LLM result", "确定性演示，非 LLM 结果"],
-  "four.deterministic": ["Deterministic analysis", "确定性分析"],
+  "four.demo": ["Demo run; no AI calls","演示运行，不使用 AI"],
+  "four.deterministic": ["Rule-based analysis","按规则分析"],
   "four.llm": ["Recorded LLM analysis", "已记录 LLM 分析"],
   "four.loading": ["Loading saved analysis…", "正在加载已保存分析…"],
   "four.currentSettings": ["Current settings, separate from historical analysis", "当前设置，与历史分析分开显示"],
@@ -209,8 +340,8 @@ const catalog: Record<string, [string, string]> = {
     "退出登录"
   ],
   "Synthetic dataset": [
-    "Synthetic dataset",
-    "合成数据集"
+    "Generated prices",
+    "虚拟价格"
   ],
   "RESEARCH WORKSPACE": [
     "RESEARCH WORKSPACE",
@@ -729,8 +860,8 @@ const catalog: Record<string, [string, string]> = {
     "暂停模拟"
   ],
   "Synthetic demo": [
-    "Synthetic demo",
-    "合成演示"
+    "Demo prices",
+    "虚拟价格"
   ],
   "Data mode": [
     "Data mode",
@@ -941,8 +1072,8 @@ const catalog: Record<string, [string, string]> = {
     "提供方模式"
   ],
   "Deterministic demo strategy": [
-    "Deterministic demo strategy",
-    "确定性演示策略"
+    "Demo mode · no AI calls",
+    "演示模式 · 不使用 AI"
   ],
   "Configured LLM": [
     "Configured LLM",
@@ -1321,8 +1452,8 @@ const catalog: Record<string, [string, string]> = {
     "完整持仓明细始终显示在交易台下方。"
   ],
   "合成演示行情 · 不代表真实市场数据": [
-    "Synthetic demo prices · not real market data",
-    "合成演示行情 · 不代表真实市场数据"
+    "These prices are generated for trying the app, not real market prices.",
+    "这些价格由程序生成，仅供体验功能，不是真实市场行情。"
   ],
   "包含形成中的行情 · 价格仅作观察": [
     "Includes forming bars · prices are for observation only",
@@ -1419,8 +1550,8 @@ const catalog: Record<string, [string, string]> = {
     "组建团队、运行实验并了解每一项决策。"
   ],
   "Versioned configurations and isolated simulated portfolios.": [
-    "Versioned configurations and isolated simulated portfolios.",
-    "版本化配置与相互隔离的模拟投资组合。"
+    "Create and browse trading experiments, then compare strategies.",
+    "创建和查看交易实验，比较不同策略。"
   ],
   "Plug investment perspectives into your trading team.": [
     "Plug investment perspectives into your trading team.",
@@ -1439,12 +1570,12 @@ const catalog: Record<string, [string, string]> = {
     "比较具有兼容设置的实验表现。"
   ],
   "A permanent trail of evidence, proposals, interventions and fills.": [
-    "A permanent trail of evidence, proposals, interventions and fills.",
-    "持续保存证据、建议、干预和成交记录。"
+    "See experiment runs, trade proposals and manual actions.",
+    "查看实验运行、交易建议和人工操作。"
   ],
   "Import and version historical market data.": [
-    "Import and version historical market data.",
-    "导入历史行情并保存数据版本。"
+    "Import prices and check their stocks and date coverage.",
+    "导入行情，查看股票和时间范围。"
   ],
   "Configure a compatible model endpoint. Secrets are write-only.": [
     "Configure a compatible model endpoint. Secrets are write-only.",
@@ -1740,12 +1871,12 @@ const catalog: Record<string, [string, string]> = {
     "基准"
   ],
   "LLM provider": [
-    "LLM provider",
-    "大模型提供方"
+    "AI analysis",
+    "AI 分析"
   ],
   "Deterministic agent demo": [
-    "Deterministic agent demo",
-    "确定性 Agent 演示"
+    "Demo mode",
+    "演示模式"
   ],
   "Trades": [
     "Trades",
@@ -1844,12 +1975,12 @@ const catalog: Record<string, [string, string]> = {
     "尚无逐时记录"
   ],
   "确定性演示 · 无模型调用": [
-    "Deterministic demo · no model call",
-    "确定性演示 · 无模型调用"
+    "Preset rules · no AI calls",
+    "按规则运行 · 不使用 AI"
   ],
   "确定性基准 · 无模型调用": [
-    "Deterministic baseline · no model call",
-    "确定性基准 · 无模型调用"
+    "Rule-based strategy · no AI calls",
+    "规则策略 · 不使用 AI"
   ],
   "推进实验会调用模型": [
     "Advancing the experiment calls the model",
@@ -2027,10 +2158,7 @@ const catalog: Record<string, [string, string]> = {
     "awaiting review",
     "等待审核"
   ],
-  "enum.ai_only": [
-    "ai only",
-    "仅 AI"
-  ],
+  "enum.ai_only": ["Automatic run","自动运行"],
   "enum.human_review": [
     "human review",
     "人工审核"
@@ -2320,10 +2448,7 @@ const catalog: Record<string, [string, string]> = {
     "Feed: IEX · API usage depends on your account limits",
     "数据源：IEX · API 用量取决于账户限额"
   ],
-  "Deterministic fixture · clearly marked synthetic": [
-    "Deterministic fixture · clearly marked synthetic",
-    "确定性测试数据 · 明确标记为合成"
-  ],
+  "Deterministic fixture · clearly marked synthetic": ["Computer-generated prices for trying the app","程序生成的价格，仅供体验功能"],
   "Collectors fetch data separately from experiments. Starting or pausing a collector never submits brokerage orders or starts an Agent.": [
     "Collectors fetch data separately from experiments. Starting or pausing a collector never submits brokerage orders or starts an Agent.",
     "采集器与实验独立获取数据。启动或暂停采集器不会向券商下单，也不会启动 Agent。"
@@ -2929,7 +3054,7 @@ const catalog: Record<string, [string, string]> = {
   "Request failed ({status})": ["Request failed ({status})", "请求失败（{status}）"],
   "Close dialog": ["Close dialog", "关闭弹窗"],
   "Unavailable for this OHLCV dataset. Required data · {data}.": ["Unavailable for this OHLCV dataset. Required data · {data}.", "此 OHLCV 数据集缺少所需数据 · {data}。"],
-  "Advisors provide evidence and dissent. The execution engine accepts one final target plan. Missing required data must block or limit activation.": ["Advisors provide evidence and dissent. The execution engine accepts one final target plan. Missing required data must block or limit activation.", "顾问提供证据与不同意见，执行引擎接收唯一最终目标方案。缺少必要数据时须阻止或限制启用。"],
+  "Advisors provide evidence and dissent. The execution engine accepts one final target plan. Missing required data must block or limit activation.": ["Traders propose buys and sells; advisors add analysis. Experts cannot be enabled until their required data is available.","交易员负责提出买卖建议，顾问负责补充分析。缺少所需数据的专家暂时不能启用。"],
   "Review decision": ["Review decision", "审核建议"],
   "Date unavailable": ["Date unavailable", "日期未记录"],
   "Pending review policy": ["Pending review policy", "待审核建议处理方式"],
@@ -2946,7 +3071,7 @@ const catalog: Record<string, [string, string]> = {
   "Pause": ["Pause", "暂停"],
   "API key": ["API key", "API 密钥"],
   "Simulated decision latency (ms)": ["Simulated decision latency (ms)", "模拟决策延迟（毫秒）"],
-  "Deterministic timing assumption. No LLM call is made.": ["Deterministic timing assumption. No LLM call is made.", "确定性的时序假设，不会调用 LLM。"],
+  "Deterministic timing assumption. No LLM call is made.": ["This sets a simulated wait time. No AI model is called.","这里设置的是模拟等待时间，不会调用 AI。"],
   "Saved expert profile text is shown in its original language.": ["Saved expert profile text is shown in its original language.", "已保存的专家资料按原文展示。"],
   "Model not recorded": ["Model not recorded", "未记录模型"],
   "Experiment status": ["Experiment status", "实验状态"],

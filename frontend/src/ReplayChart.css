@@ -1,0 +1,18 @@
+.candle-chart-viewport {
+  position: relative;
+  min-width: 0;
+}
+
+/* Keep the original 48-unit gutter fixed while the candle canvas pans beneath it.
+   The first candle body starts after this gutter at either supported spacing. */
+.candle-fixed-price-axis {
+  position: absolute;
+  z-index: 1;
+  inset: 0 auto auto 0;
+  display: block;
+  width: 5.333333333333333%;
+  height: 290px;
+  overflow: hidden;
+  background: #171917;
+  pointer-events: none;
+}

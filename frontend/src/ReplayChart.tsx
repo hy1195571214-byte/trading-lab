@@ -1,7 +1,9 @@
-import React, { useEffect, useId, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Any } from "./api";
 import { LText, useLocale, enumLabel } from "./i18n";
 import { Empty, ErrorMessage } from "./ui";
+import { candleViewport, candleX, candlePriceAxis, candleDateTicks } from "./candleViewport";
+import "./ReplayChart.css";
 import {
   aggregateBars,
   chartBarIndexForSource,
@@ -52,12 +54,10 @@ const price = (v: any) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-const chartX = (index: number, bars: Any[], mode: string, bar = bars[index]) =>
+const chartX = (index: number, bars: Any[], mode: string, bar = bars[index], spacing = 824 / 60) =>
   mode === "intraday"
     ? (regularSessionX(rawBarEnd(bar)) ?? 48)
-    : 48 +
-      ((bars.length <= 3 ? index + 1 : index) * 824) /
-        (bars.length <= 3 ? bars.length + 1 : Math.max(1, bars.length - 1));
+    : candleX(index, spacing);
 
 type ReplayChartProps = {
   detail: Any;
@@ -94,6 +94,10 @@ export default function ReplayChart({
   const [chartWindow, setChartWindow] = useState("60");
   const [selectedChartMode, setSelectedChartMode] = useState("");
   const [showOperations, setShowOperations] = useState(false);
+  const candleScroll = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
+  const scrollContext = useRef("");
+  const [scrollPosition, setScrollPosition] = useState({ left: 0, max: 0 });
   useEffect(() => {
     setHover(null);
     setLockedBar(null);
@@ -141,10 +145,31 @@ export default function ReplayChart({
     chartMode === "intraday"
       ? intradayBars
       : aggregateBars(eligibleMarketBars, chartMode, marketInterval);
-  const bars =
-    chartMode === "intraday" || chartWindow === "all"
-      ? aggregatedBars
-      : aggregatedBars.slice(-Number(chartWindow));
+  const bars = aggregatedBars;
+  const viewport = candleViewport(bars.length, Number(chartWindow));
+  const canvasWidth = chartMode === "intraday" ? 900 : viewport.width;
+  const xFor = (index: number, bar = bars[index]) => chartX(index, bars, chartMode, bar, viewport.spacing);
+  useLayoutEffect(() => {
+    const element = candleScroll.current;
+    if (!element) return;
+    const key = `${symbol}|${chartMode}`;
+    if (scrollContext.current !== key) { followLatest.current = true; scrollContext.current = key; }
+    const measure = () => {
+      const max = Math.max(0, element.scrollWidth - element.clientWidth);
+      if (followLatest.current) element.scrollLeft = max;
+      setScrollPosition({ left: element.scrollLeft, max });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [canvasWidth, bars.length, chartMode, symbol, marketLoading]);
+  const scrollTo = (left: number) => {
+    const element = candleScroll.current;
+    if (!element) return;
+    followLatest.current = left >= scrollPosition.max - 2;
+    element.scrollLeft = Math.max(0, Math.min(scrollPosition.max, left));
+  };
   const allVisibleFills = orders.flatMap((order: Any) =>
     (order.fills || [])
       .filter((fill: Any) => fillVisibleAt(fill, selectedAsOf))
@@ -164,6 +189,7 @@ export default function ReplayChart({
     chartMode === "intraday"
       ? intradayPriceAxis(bars, visibleExecutionPrices)
       : null;
+  const candleAxis = chartMode === "intraday" ? null : candlePriceAxis(bars, visibleExecutionPrices);
   const sourceMin = bars.length
     ? Math.min(...bars.map((x: Any) => Number(x.low)))
     : 0;
@@ -171,10 +197,10 @@ export default function ReplayChart({
     ? Math.max(...bars.map((x: Any) => Number(x.high)))
     : 1;
   const minPrice =
-    intradayAxis?.min ??
+    intradayAxis?.min ?? candleAxis?.min ??
     Math.min(sourceMin, ...(showOperations ? visibleExecutionPrices : []));
   const maxPrice =
-    intradayAxis?.max ??
+    intradayAxis?.max ?? candleAxis?.max ??
     Math.max(sourceMax, ...(showOperations ? visibleExecutionPrices : []));
   const range = maxPrice - minPrice || Math.max(Math.abs(maxPrice) * 0.02, 1);
   const priceY = (value: number) => 20 + ((maxPrice - value) / range) * 255;
@@ -199,7 +225,7 @@ export default function ReplayChart({
             sourceTime;
           return [
             {
-              x: chartX(index, bars, chartMode, b),
+              x: xFor(index, b),
               y: priceY(executionPrice),
               kind: fill.side === "sell" ? "sell" : "buy",
               label: fill.side === "sell" ? "S" : "B",
@@ -227,6 +253,8 @@ export default function ReplayChart({
     markers,
     chartMode,
     bars.length,
+    canvasWidth,
+    viewport.spacing,
   );
   const volumeMax = Math.max(1, ...bars.map((x: Any) => Number(x.volume) || 0));
   const selectedBar = bars[bars.length - 1] || null;
@@ -386,9 +414,8 @@ export default function ReplayChart({
           </button>
           {chartMode !== "intraday" &&
             [
-              ["30", "30 根"],
-              ["60", "60 根"],
-              ["all", "全部"],
+              ["30", "chart.30PerScreen"],
+              ["60", "chart.60PerScreen"],
             ].map(([value, label]) => (
               <button
                 type="button"
@@ -529,9 +556,19 @@ export default function ReplayChart({
               <LText id="美股常规时段 09:30–16:00 ET · 盘前/盘后未显示 · 时间轴固定开盘至收盘" />
             </div>
           )}
-          <div className="candle-wrap">
+          <div className="candle-chart-viewport">
+          <div className="candle-wrap" ref={candleScroll} tabIndex={chartMode === "intraday" ? undefined : 0}
+            aria-label={t("chart.scrollRegion")}
+            onScroll={(event) => {
+              const element = event.currentTarget;
+              const max = Math.max(0, element.scrollWidth - element.clientWidth);
+              followLatest.current = max - element.scrollLeft < 2;
+              setScrollPosition({ left: element.scrollLeft, max });
+            }}>
             <svg
-              viewBox="0 0 900 370"
+              viewBox={`0 0 ${canvasWidth} 370`}
+              style={{ width: `${canvasWidth / 900 * 100}%`, minWidth: "100%", height: "290px" }}
+              data-price-min={minPrice} data-price-max={maxPrice} data-candle-spacing={viewport.spacing}
               preserveAspectRatio="none"
               role="img"
               aria-label={t("{symbol} {chart}，截至 {date}", {
@@ -543,10 +580,12 @@ export default function ReplayChart({
               })}
               onMouseLeave={() => setHover(null)}
             >
-              <text x="4" y="12" fill="#929b8d" fontSize="9">
-                <LText id="价格" />
-              </text>
-              <text x="896" y="12" textAnchor="end" fill="#929b8d" fontSize="9">
+              {chartMode === "intraday" && (
+                <text x="4" y="12" fill="#929b8d" fontSize="9">
+                  <LText id="价格" />
+                </text>
+              )}
+              <text x={canvasWidth - 4} y="12" textAnchor="end" fill="#929b8d" fontSize="9">
                 {chartMode === "intraday" ? t("较开盘参考") : t("价格")}
               </text>
               {[0, 1, 2, 3, 4].map((i) => {
@@ -558,16 +597,18 @@ export default function ReplayChart({
                   <g key={i}>
                     <line
                       x1="48"
-                      x2="872"
+                      x2={canvasWidth - 28}
                       y1={20 + i * 63.75}
                       y2={20 + i * 63.75}
                       stroke="#30352f"
                     />
-                    <text x="4" y={24 + i * 63.75} fill="#929b8d" fontSize="10">
-                      {price(tickPrice)}
-                    </text>
+                    {chartMode === "intraday" && (
+                      <text x="4" y={24 + i * 63.75} fill="#929b8d" fontSize="10">
+                        {price(tickPrice)}
+                      </text>
+                    )}
                     <text
-                      x="896"
+                      x={canvasWidth - 4}
                       y={24 + i * 63.75}
                       textAnchor="end"
                       fill="#929b8d"
@@ -609,7 +650,7 @@ export default function ReplayChart({
                     d={bars
                       .map(
                         (bar: Any, i: number) =>
-                          `${i ? "L" : "M"}${chartX(i, bars, chartMode, bar)},${priceY(Number(bar.close))}`,
+                          `${i ? "L" : "M"}${xFor(i, bar)},${priceY(Number(bar.close))}`,
                       )
                       .join(" ")}
                     fill="none"
@@ -619,14 +660,14 @@ export default function ReplayChart({
                     strokeLinecap="round"
                   />
                   {bars.map((bar: Any, i: number) => {
-                    const x = chartX(i, bars, chartMode, bar),
+                    const x = xFor(i, bar),
                       prevX =
                         i > 0
-                          ? chartX(i - 1, bars, chartMode, bars[i - 1])
+                          ? xFor(i - 1, bars[i - 1])
                           : null,
                       nextX =
                         i < bars.length - 1
-                          ? chartX(i + 1, bars, chartMode, bars[i + 1])
+                          ? xFor(i + 1, bars[i + 1])
                           : null,
                       spacing =
                         prevX == null
@@ -734,8 +775,8 @@ export default function ReplayChart({
                 </>
               ) : (
                 bars.map((bar: Any, i: number) => {
-                  const x = chartX(i, bars, chartMode, bar),
-                    bw = Math.max(3, Math.min(13, 700 / bars.length)),
+                  const x = xFor(i, bar),
+                    bw = Math.min(13, viewport.spacing * 0.65),
                     o = priceY(Number(bar.open)),
                     c = priceY(Number(bar.close)),
                     hi = priceY(Number(bar.high)),
@@ -829,9 +870,9 @@ export default function ReplayChart({
                         </title>
                       </rect>
                       <rect
-                        x={x - 10}
+                      x={x - viewport.spacing / 2}
                         y="10"
-                        width="20"
+                        width={viewport.spacing}
                         height="350"
                         fill="transparent"
                       />
@@ -839,10 +880,12 @@ export default function ReplayChart({
                   );
                 })
               )}
-              <line x1="48" x2="872" y1="297" y2="297" stroke="#444a40" />
-              <text x="4" y="322" fill="#929b8d" fontSize="10">
-                <LText id="VOL" />
-              </text>
+              <line x1="48" x2={canvasWidth - 28} y1="297" y2="297" stroke="#444a40" />
+              {chartMode === "intraday" && (
+                <text x="4" y="322" fill="#929b8d" fontSize="10">
+                  <LText id="VOL" />
+                </text>
+              )}
               {(() => {
                 const focusBar = lockedBar || hover;
                 if (
@@ -853,7 +896,7 @@ export default function ReplayChart({
                 const index = bars.findIndex(
                     (bar: Any) => dateOf(bar) === dateOf(focusBar),
                   ),
-                  x = chartX(index, bars, chartMode, focusBar),
+                  x = xFor(index, focusBar),
                   y = priceY(Number(focusBar.close));
                 return (
                   <g className="crosshair" pointerEvents="none">
@@ -867,7 +910,7 @@ export default function ReplayChart({
                     />
                     <line
                       x1="48"
-                      x2="872"
+                      x2={canvasWidth - 28}
                       y1={y}
                       y2={y}
                       stroke="#d6ee3e"
@@ -948,12 +991,11 @@ export default function ReplayChart({
                       </text>
                     </g>
                   ))
-                : [0, Math.floor((bars.length - 1) / 2), bars.length - 1]
-                    .filter((index, i, all) => all.indexOf(index) === i)
+                : candleDateTicks(bars.length, viewport.spacing)
                     .map((index) => (
                       <text
                         key={`date-${index}`}
-                        x={chartX(index, bars, chartMode, bars[index])}
+                        x={xFor(index, bars[index])}
                         y="365"
                         textAnchor={
                           index === 0
@@ -970,6 +1012,34 @@ export default function ReplayChart({
                     ))}
             </svg>
           </div>
+          {chartMode !== "intraday" && (
+            <svg
+              className="candle-fixed-price-axis"
+              viewBox="0 0 48 370"
+              preserveAspectRatio="none"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <text x="4" y="12" fill="#929b8d" fontSize="9">
+                <LText id="价格" />
+              </text>
+              {[0, 1, 2, 3, 4].map((i) => (
+                <text key={i} x="4" y={24 + i * 63.75} fill="#929b8d" fontSize="10">
+                  {price(maxPrice - (i * range) / 4)}
+                </text>
+              ))}
+              <text x="4" y="322" fill="#929b8d" fontSize="10">
+                <LText id="VOL" />
+              </text>
+            </svg>
+          )}
+          </div>
+          {chartMode !== "intraday" && scrollPosition.max > 1 && <div className="candle-scroll-controls">
+            <button type="button" aria-label={t("chart.earlier")} disabled={scrollPosition.left <= 1} onClick={() => scrollTo(scrollPosition.left - (candleScroll.current?.clientWidth || 500) * 0.8)}>←</button>
+            <input type="range" aria-label={t("chart.pan")} min="0" max={scrollPosition.max} step="1" value={scrollPosition.left} onChange={event => scrollTo(Number(event.target.value))} />
+            <button type="button" aria-label={t("chart.later")} disabled={scrollPosition.left >= scrollPosition.max - 1} onClick={() => scrollTo(scrollPosition.left + (candleScroll.current?.clientWidth || 500) * 0.8)}>→</button>
+            <button type="button" onClick={() => scrollTo(scrollPosition.max)}>{t("chart.latest")}</button>
+          </div>}
           {market?.synthetic && (
             <div className="tag warn">
               <LText id="合成演示行情 · 不代表真实市场数据" />
@@ -1001,6 +1071,8 @@ function spreadAggregateMarkers(
   markers: Any[],
   mode: string,
   barCount: number,
+  chartWidth = 900,
+  candleSpacing = 824 / 60,
 ): Any[] {
   if (mode === "intraday") {
     const sorted = [...markers].sort((a, b) => a.x - b.x);
@@ -1030,8 +1102,7 @@ function spreadAggregateMarkers(
     group.push(marker);
     groups.set(marker.x, group);
   }
-  const columnWidth =
-    824 / (barCount <= 3 ? barCount + 1 : Math.max(1, barCount - 1));
+  const columnWidth = candleSpacing;
   const maxColumns = Math.max(1, Math.min(10, Math.floor(columnWidth / 22)));
   return [...groups.values()].flatMap((group) => {
     const columns = Math.min(group.length, maxColumns);
@@ -1039,7 +1110,7 @@ function spreadAggregateMarkers(
       ...marker,
       labelX: Math.max(
         58,
-        Math.min(862, marker.x + ((index % columns) - (columns - 1) / 2) * 22),
+        Math.min(chartWidth - 38, marker.x + ((index % columns) - (columns - 1) / 2) * 22),
       ),
       labelY: Math.max(
         24,

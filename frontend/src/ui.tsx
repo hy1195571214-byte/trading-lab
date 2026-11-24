@@ -78,7 +78,7 @@ export function KPIs({ detail }: any) {
       </div>
       <div className="kpi">
         <label><LText id="Total return"/></label>
-        <b className={m.total_return < 0 ? "red" : "green"}>{pct(m.total_return)}</b>
+        <b><ReturnValue value={m.total_return} /></b>
         <small><LText id="Since experiment start"/></small>
       </div>
       <div className="kpi">
@@ -167,4 +167,20 @@ export function money(n: any, maximumFractionDigits = 0) {
 }
 export function pct(n: any) {
   return n == null ? "—" : `${(Number(n) * 100).toFixed(2)}%`;
+}
+export function ReturnValue({ value }: { value: unknown }) {
+  if (value == null || !Number.isFinite(Number(value))) return <>—</>;
+  const number = Number(value);
+  return <span className={`metric-number ${number > 0 ? "metric-gain" : number < 0 ? "metric-loss" : "metric-neutral"}`}>
+    <span aria-hidden="true">{number > 0 ? "▲ " : number < 0 ? "▼ " : ""}</span>{number > 0 ? "+" : ""}{pct(number)}
+  </span>;
+}
+export function VolatilityValue({ value, reference }: { value: unknown; reference?: number }) {
+  const { t } = useLocale();
+  if (value == null || !Number.isFinite(Number(value))) return <>—</>;
+  const number = Number(value);
+  const width = reference ? Math.min(100, Math.max(0, number / Math.max(reference, number, 0.0001) * 100)) : 0;
+  return <span className="metric-volatility" title={t("metric.volatilityHelp")}><span className="metric-number">{pct(number)}</span>
+    {reference != null && <span className="metric-volatility-track" aria-hidden="true"><i style={{width: `${width}%`}} /></span>}
+  </span>;
 }

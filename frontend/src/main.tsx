@@ -13,13 +13,18 @@ import {
   NavIcon,
   FlaskIcon,
   ErrorMessage,
+  ReturnValue,
+  VolatilityValue,
 } from "./ui";
+import ActivityLog from "./ActivityLog";
+import { conciseNumber } from "./presentationFormatting";
 import { Any, req, ApiError } from "./api";
 import { AuthContext, AuthGate } from "./AuthGate";
 import ReplayDesk from "./ReplayDesk";
 import HarnessPanel from "./frontendHarnessPanel";
 import { ScrollRegion } from "./ScrollRegion";
 import { responseMatchesSelection } from "./replayData";
+import { DatasetName, DataRequirements, datasetDisplayName, datasetCoverage, groupDatasetImports, requirementLabel } from "./dataPresentation";
 import { ModeSettings, AnalysisPanel, InterventionHistory, useAnalysis, defaultWeights, fractionalWeights, validWeights, LabMode, Weights } from "./FourMode";
 
 const nav = [
@@ -161,6 +166,8 @@ function App() {
     }
   };
   const expConfig = detail?.config || {};
+  const isRuleStrategy = expConfig.lab_mode === "quant_baseline" || Boolean(expConfig.strategy && expConfig.strategy !== "agent");
+  const usesAiModel = !isRuleStrategy && expConfig.provider_mode === "llm";
   const selectedDetail = detail?.id === sel ? detail : null;
   const hasSelectedDetail = () => Boolean(sel && selectedIdRef.current === sel && detail?.id === sel);
   const title = page === "Trading desk" ? "Trading workspace" : page;
@@ -183,16 +190,16 @@ function App() {
           ))}
         </div>
         <span className="pill lime"><LText id="● Historical replay"/></span>
-        <span className="pill">
+        {selectedDetail && <span className="pill" title={t(usesAiModel ? "copy.aiHelp" : "copy.demoHelp")}>
           ●{" "}
-          {expConfig.lab_mode === "quant_baseline" ? `${t("Baseline")} · ${enumLabel(t, expConfig.quant_strategy)}` : expConfig.strategy && expConfig.strategy !== "agent"
-            ? `${t("Baseline")} · ${enumLabel(t, expConfig.strategy)}`
+          {isRuleStrategy
+            ? t("copy.ruleMode")
             : expConfig.provider_mode === "llm"
               ? t("LLM provider")
               : t("Deterministic agent demo")}
-        </span>
+        </span>}
         {!!datasets.find((d: Any) => d.id === expConfig.dataset_id)
-          ?.synthetic && <span className="pill"><LText id="Synthetic dataset"/></span>}
+          ?.synthetic && <span className="pill" title={t("copy.virtualHelp")}><LText id="Synthetic dataset"/></span>}
         <LanguageSwitch />
         {auth.enabled && <button onClick={auth.logout}><LText id="Sign out"/></button>}
       </header>
@@ -266,6 +273,7 @@ function App() {
         {page === "Overview" && (
           <Overview
             runs={runs}
+            datasets={datasets}
             detail={selectedDetail}
             go={S}
             open={() => S("Trading desk")}
@@ -278,6 +286,7 @@ function App() {
         {page === "Experiments" && (
           <Experiments
             runs={runs}
+            datasets={datasets}
             compare={compare}
             C={C}
             select={(id: string) => {
@@ -334,7 +343,7 @@ function App() {
             compareNow={compareNow}
           />
         )}
-        {page === "Activity" && <Activity items={activity} />}
+        {page === "Activity" && <ActivityLog items={activity} runs={runs} />}
         {page === "Data hub" && <DataHub datasets={datasets} upload={upload} onImported={reload} />}
         {page === "harness" && <HarnessPanel />}
         {page === "Settings" && (
@@ -675,7 +684,7 @@ function desc(p: string) {
     )[p] || ""
   );
 }
-function Overview({ runs, detail, go, open, select, loading, refresh, create }: any) {
+function Overview({ runs, datasets, detail, go, open, select, loading, refresh, create }: any) {
   const { t } = useLocale();
   return (
     <>
@@ -687,7 +696,7 @@ function Overview({ runs, detail, go, open, select, loading, refresh, create }: 
             benchmark={detail?.benchmark_history}
           />
           <div className="micro">
-            Sharpe{" "}
+            <span title={t("metric.sharpeHelp")}>{t("metric.sharpe")}</span>{" "}
             {detail?.metrics?.sharpe == null
               ? "—"
               : Number(detail.metrics.sharpe).toFixed(2)}
@@ -711,12 +720,12 @@ function Overview({ runs, detail, go, open, select, loading, refresh, create }: 
       </div>
       <Panel title={t("Recent experiments")}>
         <div className="toolbar end"><Btn onClick={refresh} disabled={loading}><LText id="Refresh"/></Btn></div>
-        {loading ? <Empty><LText id="Loading saved experiments…"/></Empty> : runs?.length ? <RunTable runs={runs} select={select} /> : <Empty><LText id="No experiments found."/> <Btn kind="primary" onClick={create}><LText id="Create an experiment"/></Btn></Empty>}
+        {loading ? <Empty><LText id="Loading saved experiments…"/></Empty> : runs?.length ? <RunTable runs={runs} datasets={datasets} select={select} /> : <Empty><LText id="No experiments found."/> <Btn kind="primary" onClick={create}><LText id="Create an experiment"/></Btn></Empty>}
       </Panel>
     </>
   );
 }
-function RunTable({ runs, select }: any) {
+function RunTable({ runs, datasets, select }: any) {
   const { t } = useLocale();
   return runs?.length ? (
     <ScrollRegion label={t("Recent experiments")}>
@@ -739,8 +748,8 @@ function RunTable({ runs, select }: any) {
             <td>
               <span className="tag">{enumLabel(t, r.status)}</span>
             </td>
-            <td>{pct(r.total_return)}</td>
-            <td>{r.dataset_id || "—"}</td>
+            <td><ReturnValue value={r.total_return} /></td>
+            <td><DatasetName id={r.dataset_id} datasets={datasets} /></td>
             <td>
               <Btn onClick={() => select(r.id)}><LText id="Open"/></Btn>
             </td>
@@ -753,7 +762,7 @@ function RunTable({ runs, select }: any) {
     <Empty><LText id="No experiments have been created."/></Empty>
   );
 }
-function Experiments({ runs, compare, C, select, start }: any) {
+function Experiments({ runs, datasets, compare, C, select, start }: any) {
   const { t } = useLocale();
   return (
     <>
@@ -803,8 +812,8 @@ function Experiments({ runs, compare, C, select, start }: any) {
                   <td>{r.name}</td>
                   <td>{enumLabel(t, r.lab_mode || r.config?.lab_mode || r.mode)}</td>
                   <td>{enumLabel(t, r.status)}</td>
-                  <td>{pct(r.total_return)}</td>
-                  <td>{r.dataset_id}</td>
+                  <td><ReturnValue value={r.total_return} /></td>
+                  <td><DatasetName id={r.dataset_id} datasets={datasets} /></td>
                   <td>
                     <Btn onClick={() => select(r.id)}><LText id="Open"/></Btn>
                   </td>
@@ -817,8 +826,8 @@ function Experiments({ runs, compare, C, select, start }: any) {
           <Empty><LText id="Create a research run to start comparing strategies."/></Empty>
         )}
       </Panel>
-      <Panel title={t("Research integrity")}>
-        <p><LText id="Results are simulated. Comparisons may be misleading when dates, assets, starting capital or execution costs differ."/></p>
+      <Panel title={t("copy.comparingTitle")}>
+        <p>{t("copy.comparing")}</p>
         <Btn kind="primary" onClick={start}><LText id="＋ New experiment"/></Btn>
       </Panel>
     </>
@@ -911,12 +920,13 @@ function ExpertBadge({ ex, role, enabled }: any) {
     ],
   ];
   const n = ex?.strategy === "value" ? 1 : ex?.strategy === "risk" ? 2 : 0;
+  const focus = ({momentum:"Trend", value:"Value", risk:"Risk"} as Record<string,string>)[String(ex?.strategy || "")];
   return (
     <div className="badge">
       <div className="lanyard"></div>
       <div className="strip">
         {ex?.name?.toUpperCase() || t("Expert")} <span>{enumLabel(t, role || ex?.role)}</span>
-        <i>{enabled ? "●" : "○"}</i>
+        {enabled !== undefined && <i aria-label={t(enabled ? "Enabled" : "data.disabled")}>{enabled ? "●" : "○"}</i>}
       </div>
       <div className="badgebody">
         <svg className="portrait" viewBox="-2 -2 20 20">
@@ -938,18 +948,10 @@ function ExpertBadge({ ex, role, enabled }: any) {
         </svg>
         <div>
           <b>{enumLabel(t, role || ex?.role || "advisor")}</b>
-          <small>{t("原文 / Original")}: {ex?.description || ex?.objective}</small>
+          {focus && <span className="expert-focus">{t(focus)}</span>}
         </div>
       </div>
-      <footer>
-        EXP · v{ex?.version || "1.0"}　
-        <span>{enabled === false ? "○" : "●"}</span>{" "}
-        {enabled === false
-          ? t("Disabled · data unavailable")
-          : enabled === true
-            ? t("Active next decision")
-            : t("Versioned · not assigned")}
-      </footer>
+      {enabled !== undefined && <footer className="badge-status">{t(enabled ? "Enabled" : "data.disabled")}</footer>}
     </div>
   );
 }
@@ -982,14 +984,12 @@ function Experts({ experts, add, create }: any) {
         {matches.map((ex: any) => (
           <Panel key={ex.id}>
             <ExpertBadge ex={ex} />
-            <p>{t("原文 / Original")} · {ex.objective || ex.description}</p>
-            <small>
-              {t("Required data")} · {(ex.required_data || []).join(", ") || "OHLCV"}
-            </small>
-            {missingData(ex).length > 0 && <p className="error compact">{t("Unavailable for this OHLCV dataset. Required data · {data}.", {data: missingData(ex).join(", ")})}</p>}
+            {ex.activation_status === "research_only" && <p className="error compact">研究草稿 / Research only · 可审阅来源，尚未验证或启用交易。</p>}
+            <DataRequirements items={ex.required_data} />
+            {missingData(ex).length > 0 && <p className="error compact">{t("data.missing", { data: missingData(ex).map((field: string) => requirementLabel(field, t)).join(" / ") })}</p>}
             <div className="toolbar">
-              <Btn onClick={() => add(ex)}><LText id="Add to team"/></Btn>
-              <Btn onClick={() => add({ ...ex, role: "Advisor" })}><LText id="Add as advisor"/></Btn>
+              <Btn disabled={ex.activation_status === "research_only"} onClick={() => add(ex)}><LText id="Add to team"/></Btn>
+              <Btn disabled={ex.activation_status === "research_only"} onClick={() => add({ ...ex, role: "Advisor" })}><LText id="Add as advisor"/></Btn>
               <Btn onClick={() => setSelectedExpert(ex)}><LText id="Strategy details"/></Btn>
             </div>
           </Panel>
@@ -1010,11 +1010,30 @@ function Experts({ experts, add, create }: any) {
         <dl className="expert-details">
           <dt><LText id="Strategy objective"/></dt><dd>{selectedExpert.objective || t("Not provided")}</dd>
           <dt><LText id="Horizon"/></dt><dd>{selectedExpert.horizon || t("Not specified")}</dd>
-          <dt><LText id="Required data"/></dt><dd>{requiredData(selectedExpert).join(", ") || "OHLCV"}</dd>
+          <dt><LText id="Required data"/></dt><dd><DataRequirements items={requiredData(selectedExpert)} showLabel={false} /></dd>
           <dt><LText id="Instructions"/></dt><dd>{selectedExpert.instructions || t("Not provided")}</dd>
           <dt><LText id="Risk notes"/></dt><dd>{selectedExpert.risk_notes || t("Not provided")}</dd>
         </dl>
-        {missingData(selectedExpert).length > 0 && <p className="error compact">{t("Unavailable for this OHLCV dataset. Required data · {data}.", {data: missingData(selectedExpert).join(", ")})}</p>}
+        {selectedExpert.research && <section>
+          <h3>来源与研究审查 / Sources and research review</h3>
+          <p>{selectedExpert.research.scope}</p>
+          <p>{selectedExpert.research.academic_use}</p>
+          <p>{selectedExpert.research.attribution_limit}</p>
+          <p>{selectedExpert.research.validation_status}</p>
+          {(selectedExpert.research.principles || []).map((principle: Any) => <div key={principle.id}>
+            <b>{principle.id} · {principle.statement}</b>
+            <p>{principle.evidence_assessment}</p>
+            <small>{(principle.source_ids || []).join(" · ")}</small>
+          </div>)}
+          <ul>{(selectedExpert.research.sources || []).map((source: Any) => <li key={source.id}>
+            <a href={/^https?:\/\//.test(source.url || "") ? source.url : undefined} target="_blank" rel="noreferrer">{source.id} · {source.title}</a>
+            <p>{source.locator || "定位详见本地证据档案"}</p>
+            {source.quote && <blockquote>{source.quote}</blockquote>}
+            <small>{source.published_at || "发表时间待核"} · {source.rights_note || "引用与数据分析；再分发许可须另审"}</small>
+          </li>)}</ul>
+          <p>缺口 / Gaps: {(selectedExpert.research.gaps || []).join("；")}</p>
+        </section>}
+        {missingData(selectedExpert).length > 0 && <p className="error compact">{t("data.missing", {data: missingData(selectedExpert).map((field: string) => requirementLabel(field, t)).join(" / ")})}</p>}
         <Btn onClick={() => setSelectedExpert(null)}><LText id="Close details"/></Btn>
       </div></div>}
     </>
@@ -1181,7 +1200,7 @@ function TeamEditor({ team: initialTeam, experts, pendingPolicy, hasPending, clo
   })));
   const [newExpert, setNewExpert] = useState("");
   const expertFor = (id: string) => experts.find((item: Any) => item.id === id);
-  const available = (expert: Any) => (expert?.required_data || []).every((item: string) => ["price", "prices", "ohlcv", "price history", "historical prices"].includes(item.toLowerCase()));
+  const available = (expert: Any) => expert?.activation_status !== "research_only" && (expert?.required_data || []).every((item: string) => ["price", "prices", "ohlcv", "price history", "historical prices"].includes(item.toLowerCase()));
   const enabledTraders = team.filter((item) => item.enabled && item.role === "trader").length;
   const unavailable = team.filter((item) => item.enabled && !available(expertFor(item.expert_id)));
   const duplicate = team.some((item, index) => team.findIndex((other) => other.expert_id === item.expert_id) !== index);
@@ -1213,7 +1232,7 @@ function TeamEditor({ team: initialTeam, experts, pendingPolicy, hasPending, clo
                 <strong>{expert.name}</strong>
                 <span className="muted">{expert.version ? `v${expert.version}` : ""}</span>
                 <p>{expert.objective || expert.description || ""}</p>
-                <small>{t("Required data")} · {(expert.required_data || []).join(", ") || "OHLCV"}</small>
+                <DataRequirements items={expert.required_data} />
                 {!supported && <small className="error"><LText id="Unavailable: this experiment supplies price history only."/></small>}
                 <details><summary><LText id="Instructions and limits"/></summary><p>{expert.instructions || t("No instructions provided.")}</p><small>{expert.risk_notes || t("No risk notes provided.")}</small></details>
               </div>
@@ -1454,7 +1473,7 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
                 ? t("Compatible configurations")
                 : t("Configuration differences found")}
             </div>
-            {result.notice && <p>{t("Server response (original)")} · {result.notice}</p>}
+            {result.notice && <p>{t(result.comparable ? "copy.comparisonReady" : "copy.comparisonDifference")}</p>}
             <ScrollRegion label={t("Experiment comparison")}>
 <table>
               <thead>
@@ -1465,9 +1484,9 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
                   <th><LText id="As of"/></th>
                   <th><LText id="Total return"/></th>
                   <th><LText id="Max drawdown"/></th>
-                  <th><LText id="Annual volatility"/></th>
+                  <th>{t("metric.volatility")}</th>
                   <th><LText id="Fees"/></th>
-                  <th>Sharpe</th>
+                  <th title={t("metric.sharpeHelp")}>{t("metric.sharpe")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1476,17 +1495,19 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
                     <td>{x.name}</td>
                     <td>{enumLabel(t, result.treatment_modes?.[i])}</td>
                     <td>{enumLabel(t, x.status)}</td>
-                    <td>{x.as_of_date || "—"}</td>
-                    <td>{pct(x.metrics?.total_return)}</td>
-                    <td>{pct(x.metrics?.max_drawdown)}</td>
-                    <td>{pct(x.metrics?.annualized_volatility)}</td>
-                    <td>{money(x.metrics?.fees_paid ?? x.metrics?.fees, 2)}</td>
-                    <td>{x.metrics?.sharpe ?? "—"}</td>
+                    <td className="metric-number">{x.as_of_date || "—"}</td>
+                    <td><ReturnValue value={x.metrics?.total_return} /></td>
+                    <td className="metric-number">{pct(x.metrics?.max_drawdown)}</td>
+                    <td><VolatilityValue value={x.metrics?.annualized_volatility} reference={Math.max(...result.experiments.map((run: Any) => Number(run.metrics?.annualized_volatility) || 0))} /></td>
+                    <td className="metric-number">{money(x.metrics?.fees_paid ?? x.metrics?.fees, 2)}</td>
+                    <td className="metric-number">{conciseNumber(x.metrics?.sharpe)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
 </ScrollRegion>
+            <p className="metric-explanation">{t("metric.sharpeHelp")} {t("metric.volatilityHelp")}</p>
+            <details className="metric-explanation"><summary>{t("metric.calculation")}</summary><p>{t("metric.calculationDetail")}</p></details>
             {(result.treatment_differences || result.control_differences) ? <>
               <details><summary>{t("four.treatmentDifferences")}</summary><pre>{JSON.stringify(result.treatment_differences || {}, null, 2)}</pre></details>
               <details><summary>{t("four.controlDifferences")}</summary><pre>{JSON.stringify(result.control_differences || {}, null, 2)}</pre></details>
@@ -1505,7 +1526,7 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
         {reportError && <p className="error"><ErrorMessage error={reportError}/></p>}
         {reportDetail && !reportLoading && <>
           <div className="kpis report-kpis">
-            <div className="kpi"><label><LText id="Annualized volatility"/></label><b>{pct(reportDetail.metrics?.annualized_volatility)}</b></div>
+            <div className="kpi"><label>{t("metric.volatility")}</label><b><VolatilityValue value={reportDetail.metrics?.annualized_volatility} /></b></div>
             <div className="kpi"><label><LText id="Trading fees"/></label><b>{money(reportDetail.metrics?.fees_paid ?? reportDetail.metrics?.fees, 2)}</b></div>
             <div className="kpi"><label><LText id="Human reviews"/></label><b>{reviewedDecisions.length}</b><small>{t("Approve")} {reviewCounts.approve} · {t("Modify")} {reviewCounts.modify} · {t("Reject")} {reviewCounts.reject}</small></div>
             <div className="kpi"><label><LText id="LLM calls / estimated cost"/></label><b>{reportDetail.state?.llm_calls ?? usage.length} / {money(estimatedCost, 6)}</b><small>{t("Cost sums recorded estimates only")}{usage.some((item: Any) => item.estimated_cost_usd == null) ? ` · ${t("Some costs are unknown")}` : ""}</small></div>
@@ -1550,41 +1571,9 @@ function Reports({ runs, compare, C, exportRun, result, compareNow }: any) {
     </>
   );
 }
-function Activity({ items }: any) {
-  const { t } = useLocale();
-  return (
-    <Panel title={t("Audit trail")}>
-      {items?.length ? (
-        <ScrollRegion label={t("Audit trail")}>
-<table>
-          <thead>
-            <tr>
-              <th><LText id="Time"/></th>
-              <th><LText id="Experiment"/></th>
-              <th><LText id="Event"/></th>
-              <th><LText id="Details (original)"/></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((e: any, index: number) => (
-              <tr key={`${e.experiment_id || "system"}:${e.id || e.event_id || index}`}>
-                <td>{e.created_at || e.timestamp || e.date || "—"}</td>
-                <td>{e.experiment_id || "—"}</td>
-                <td>{enumLabel(t, e.type || e.event || e.action)}</td>
-                <td>{e.details ? JSON.stringify(e.details) : e.message || e.detail || JSON.stringify(e)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-</ScrollRegion>
-      ) : (
-        <Empty><LText id="No recorded activity yet."/></Empty>
-      )}
-    </Panel>
-  );
-}
 function DataHub({ datasets, upload, onImported }: any) {
   const { t, locale } = useLocale();
+  const datasetGroups = groupDatasetImports(datasets || []);
   const [form, setForm] = useState({ symbol: "AAPL", timeframe: "1m", start: "", end: "" });
   const csvInputRef = useRef<HTMLInputElement>(null);
   const [provider, setProvider] = useState<Any>({});
@@ -1642,6 +1631,24 @@ function DataHub({ datasets, upload, onImported }: any) {
     finally { setLoading(false); }
   };
   return <>
+    <Panel title={t("Available datasets")}>{datasets?.length ? <>
+      <p className="muted">{t("data.inventory", {count: datasetGroups.length, imports: datasets.length})}</p>
+      <ScrollRegion label={t("Available datasets")}><table>
+        <thead><tr><th><LText id="Name"/></th><th><LText id="Coverage"/></th><th><LText id="Symbols"/></th><th>{t("data.type")}</th><th><LText id="Rows"/></th></tr></thead>
+        <tbody>{datasetGroups.map(({dataset: d, imports}) => <tr key={d.id}>
+          <td><span className="dataset-name"><strong>{datasetDisplayName(d, t)}</strong></span>
+            {imports.length > 1 && <span className="dataset-copy-note">{t("data.copies", {count: imports.length})}</span>}
+            <details className="dataset-imports"><summary>{t("data.details")}</summary>
+              {imports.map(item => <div key={item.id}><span>{item.name}</span><code>{item.id}</code></div>)}
+            </details>
+          </td>
+          <td>{datasetCoverage(d)}</td><td>{(d.symbols || []).join(", ")}</td>
+          <td><span className={`data-chip ${d.synthetic ? "data-chip--demo" : "data-chip--price"}`}>{t(d.synthetic ? "data.synthetic" : "data.imported")}</span></td>
+          <td>{d.rows ?? "—"}</td>
+        </tr>)}</tbody>
+      </table></ScrollRegion>
+    </> : <Empty><LText id="No datasets yet. Import a CSV file or fetch historical bars."/></Empty>}</Panel>
+
     <Panel title={t("Historical minute data")}>
       <p><LText id="Request timestamped historical bars from Alpaca using the IEX feed. Each import creates a separate immutable dataset. The secret stays in the local backend."/></p>
       {!provider.configured && <div className="tag warn"><LText id="Alpaca credentials are not configured. Add them under Settings before requesting data."/></div>}
@@ -1670,7 +1677,7 @@ function DataHub({ datasets, upload, onImported }: any) {
       <small><LText id="“Live” describes incoming data. A forming bar is not a completed decision input. Check the saved bar timestamp and source before starting a live experiment."/></small>
     </Panel>
     <Panel title={t("Import CSV")}><p><LText id="Import a local OHLCV CSV as a versioned dataset. Timestamp CSV files preserve intraday bars; date-only files remain daily data."/></p><Btn kind="upload" onClick={() => csvInputRef.current?.click()}><LText id="Choose CSV"/></Btn><input ref={csvInputRef} type="file" hidden accept=".csv,text/csv" onChange={(e: any) => e.target.files?.[0] && upload(e.target.files[0])} /></Panel>
-    <Panel title={t("Available datasets")}>{datasets?.length ? <ScrollRegion label={t("Available datasets")}><table><thead><tr><th><LText id="Name"/></th><th><LText id="Dataset ID"/></th><th><LText id="Coverage"/></th><th><LText id="Symbols"/></th><th><LText id="Interval / source"/></th><th><LText id="Rows"/></th></tr></thead><tbody>{datasets.map((d: any) => <tr key={d.id}><td>{d.name}</td><td>{d.id}</td><td>{d.range?.start || d.start_date || "—"} – {d.range?.end || d.end_date || "—"}</td><td>{(d.symbols || []).join(", ")}</td><td>{d.synthetic ? t("Synthetic demo") : `${d.bar_interval || d.timeframe || t("Daily")} · ${d.source_feed || t("Imported")}`}</td><td>{d.rows ?? "—"}</td></tr>)}</tbody></table></ScrollRegion> : <Empty><LText id="No datasets yet. Import a CSV file or fetch historical bars."/></Empty>}</Panel>
+
   </>;
 }
 function Settings({ settings, save, test, refresh }: any) {
@@ -1934,8 +1941,7 @@ function Wizard({ step, setStep, close, datasets, experts, submit }: any) {
                   <option value=""><LText id="Select dataset"/></option>
                   {datasets.map((d: any) => (
                     <option key={d.id} value={d.id}>
-                      {d.name}
-                      {d.synthetic ? ` · ${t("Synthetic demo")}` : ""}
+                      {datasetDisplayName(d, t)} · {datasetCoverage(d)}
                     </option>
                   ))}
                 </select>
