@@ -2,6 +2,8 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 export type Locale = "en" | "zh-CN";
 type Params = Record<string, string | number>;
 const catalog: Record<string, [string, string]> = {
+  "Reading workspace data…": ["Reading workspace data…", "正在读取工作区数据…"],
+  "Unable to load the workspace. Check your connection and retry.": ["Unable to load the workspace. Check your connection and retry.", "暂时无法读取工作区，请检查网络后重试。"],
   "Data storage is temporarily unavailable. Please retry.": ["Data storage is temporarily unavailable. Please retry.", "数据服务暂时不可用，请稍后重试。"],
   "Saved experiment views are being prepared. Retry shortly.": ["Saved experiment views are being prepared. Retry shortly.", "实验结果正在准备，请稍后重试。"],
   "Saved experiment view is being prepared. Retry shortly.": ["Saved experiment view is being prepared. Retry shortly.", "实验结果正在准备，请稍后重试。"],

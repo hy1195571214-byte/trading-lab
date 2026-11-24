@@ -19,7 +19,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       setEnabled(Boolean(status.auth_required));
       setState(!status.auth_required || status.authenticated ? "ready" : "login");
     } catch {
-      setError("Unable to connect to the backend. A free cloud instance may take about a minute to wake up.");
+      setError("Unable to load the workspace. Check your connection and retry.");
       setState("error");
     }
   }, []);
@@ -41,7 +41,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     <span className="tag lime"><LText id="TRADING LAB · SHARED RESEARCH WORKSPACE"/></span>
     <h1>{state === "login" ? t("Sign in to Trading Lab") : t("Connecting to Trading Lab")}</h1>
     <p><LText id="Historical trading experiments, expert strategies and human oversight. Simulated capital only."/></p>
-    {state === "loading" && <p role="status"><LText id="Connecting… The free cloud backend may need about a minute to wake up."/></p>}
+    {state === "loading" && <p role="status"><LText id="Reading workspace data…"/></p>}
     {error && <p role="alert" className="error">{t(error)}</p>}
     {state === "error" && <button className="primary" onClick={check}><LText id="Retry connection"/></button>}
     {state === "login" && <form onSubmit={async (event) => {
