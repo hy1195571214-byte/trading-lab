@@ -6,7 +6,7 @@ from pathlib import Path
 root=Path(__file__).resolve().parents[1]
 paths=['.gitignore','.dockerignore','.env.example','AGENTS.md','README.md','Dockerfile','render.yaml',
        'backend/requirements.txt','backend/README.md',
-       'frontend/package.json','frontend/package-lock.json','frontend/tsconfig.json','frontend/vite.config.ts','frontend/index.html',
+       'frontend/package.json','frontend/package-lock.json','frontend/tsconfig.json','frontend/vite.config.ts','frontend/index.html','frontend/favicon.svg',
        'cloudflare/package.json','cloudflare/package-lock.json','cloudflare/wrangler.jsonc','cloudflare/worker.mjs','cloudflare/worker.test.mjs',
        'docs/CLOUD_DEPLOYMENT.md','docs/IMPLEMENTATION_CONTRACT.md',
        'docs/research/harness/RESEARCH_AND_IMPLEMENTATION.md',
