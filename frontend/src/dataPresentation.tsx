@@ -56,20 +56,29 @@ function requirementKind(value: string) {
 }
 
 export function requirementLabel(value: string, t: Translate) {
+  if (value.trim().toLowerCase() === "macro") return t("data.unconnected.macro");
   const kind = requirementKind(value);
   return kind === "other" ? value : t(`data.requirement.${kind}`);
+}
+
+export function isSupportedDataRequirement(value: string) {
+  return requirementKind(value) !== "other";
 }
 
 export function DataRequirements({ items, showLabel = true }: { items?: string[]; showLabel?: boolean }) {
   const { t } = useLocale();
   const requirements = [...new Map((items?.length ? items : ["price"])
     .map(value => [requirementKind(value) === "other" ? value : requirementKind(value), value])).values()];
-  return <div className="data-requirements" aria-label={t("Required data")}>
+  const supported = requirements.filter(isSupportedDataRequirement);
+  const unconnected = requirements.filter(value => !isSupportedDataRequirement(value));
+  return <><div className="data-requirements" aria-label={t("Required data")}>
     {showLabel && <span className="data-requirements-label">{t("Required data")}</span>}
-    <span className="data-requirement-list">{requirements.map(value =>
+    <span className="data-requirement-list">{supported.map(value =>
       <span key={value} className={`data-chip data-chip--${requirementKind(value)}`}>
         <span className="data-chip-dot" aria-hidden="true" />{requirementLabel(value, t)}
       </span>)}
     </span>
-  </div>;
+  </div>
+    {unconnected.length > 0 && <p className="error compact">{t("data.unconnected", { data: unconnected.map(value => requirementLabel(value, t)).join(" / ") })}</p>}
+  </>;
 }

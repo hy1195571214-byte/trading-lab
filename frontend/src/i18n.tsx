@@ -39,6 +39,8 @@ const catalog: Record<string, [string, string]> = {
   "data.requirement.news": ["News", "新闻"],
   "data.requirement.fundamentals": ["Financials", "财务"],
   "data.missing": ["This dataset does not provide: {data}.", "当前数据集缺少：{data}。"],
+  "data.unconnected": ["Not integrated: {data}. This requirement cannot currently be met.", "尚未接入：{data}，当前无法满足这项需求。"],
+  "data.unconnected.macro": ["macroeconomic indicators (such as rates and inflation)", "宏观指标（利率、通胀等）"],
   "data.disabled": ["Disabled", "已停用"],
   "data.inventory": ["{count} datasets · {imports} import records", "{count} 类数据 · {imports} 条导入记录"],
   "data.copies": ["{count} imports of the same data", "同一数据导入了 {count} 份"],

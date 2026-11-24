@@ -24,7 +24,7 @@ import ReplayDesk from "./ReplayDesk";
 import HarnessPanel from "./frontendHarnessPanel";
 import { ScrollRegion } from "./ScrollRegion";
 import { responseMatchesSelection } from "./replayData";
-import { DatasetName, DataRequirements, datasetDisplayName, datasetCoverage, groupDatasetImports, requirementLabel } from "./dataPresentation";
+import { DatasetName, DataRequirements, datasetDisplayName, datasetCoverage, groupDatasetImports, requirementLabel, isSupportedDataRequirement } from "./dataPresentation";
 import { ModeSettings, AnalysisPanel, InterventionHistory, useAnalysis, defaultWeights, fractionalWeights, validWeights, LabMode, Weights } from "./FourMode";
 
 const nav = [
@@ -967,7 +967,7 @@ function Experts({ experts, add, create }: any) {
     return (!query || haystack.includes(query)) && (strategyFilter === "all" || strategy === strategyFilter);
   });
   const requiredData = (expert: Any) => expert.required_data || [];
-  const missingData = (expert: Any) => requiredData(expert).filter((field: string) => !["price", "prices", "ohlcv", "price history", "historical prices"].includes(field.toLowerCase()));
+  const missingData = (expert: Any) => requiredData(expert).filter((field: string) => isSupportedDataRequirement(field) && !["price", "prices", "ohlcv", "price history", "historical prices"].includes(field.toLowerCase()));
   return (
     <>
       <div className="toolbar">
