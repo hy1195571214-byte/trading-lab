@@ -76,30 +76,23 @@ function App() {
   const selectedIdRef = useRef(sel);
   const chooseSelection = (id: string) => { selectedIdRef.current = id; Q(id); };
   const reload = async () => {
-    try {
-      let [ds, ex, rs, rv, ac, st] = await Promise.all([
-        req("/datasets"),
-        req("/experts"),
-        req("/experiments"),
-        req("/reviews"),
-        req("/activity"),
-        req("/settings"),
-      ]);
-      D(ds);
-      E(ex);
-      R(rs);
-      V(rv);
-      A(ac);
-      T(st);
-      IL(false);
-      if (!selectedIdRef.current && rs[0]) {
-        chooseSelection(rs[0].id);
-        localStorage.setItem("trading-lab-selected", rs[0].id);
-      }
-    } catch (e: any) {
-      IL(false);
-      Z(e);
-    }
+    const results = await Promise.allSettled([
+      req("/datasets").then(D),
+      req("/experts").then(E),
+      req("/experiments").then((rs) => {
+        R(rs);
+        if (!selectedIdRef.current && rs[0]) {
+          chooseSelection(rs[0].id);
+          localStorage.setItem("trading-lab-selected", rs[0].id);
+        }
+      }),
+      req("/reviews").then(V),
+      req("/activity").then(A),
+      req("/settings").then(T),
+    ]);
+    IL(false);
+    const failed = results.find(result => result.status === "rejected");
+    if (failed?.status === "rejected") Z(failed.reason);
   };
   useEffect(() => {
     reload();
@@ -128,7 +121,7 @@ function App() {
     const poll = () => {
       if (inFlight) return;
       inFlight = true;
-      req(`/experiments/${requestedId}`)
+      req(`/experiments/${requestedId}?live=1`)
         .then((d) => {
           if (!active || !responseMatchesSelection(requestedId, selectedIdRef.current, d)) return;
           X(d);
@@ -694,6 +687,7 @@ function Overview({ runs, datasets, detail, go, open, select, loading, refresh, 
           <Chart
             history={detail?.history}
             benchmark={detail?.benchmark_history}
+            benchmarkPending={detail?.benchmark_pending}
           />
           <div className="micro">
             <span title={t("metric.sharpeHelp")}>{t("metric.sharpe")}</span>{" "}

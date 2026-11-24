@@ -2,6 +2,10 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 export type Locale = "en" | "zh-CN";
 type Params = Record<string, string | number>;
 const catalog: Record<string, [string, string]> = {
+  "Data storage is temporarily unavailable. Please retry.": ["Data storage is temporarily unavailable. Please retry.", "数据服务暂时不可用，请稍后重试。"],
+  "Saved experiment views are being prepared. Retry shortly.": ["Saved experiment views are being prepared. Retry shortly.", "实验结果正在准备，请稍后重试。"],
+  "Saved experiment view is being prepared. Retry shortly.": ["Saved experiment view is being prepared. Retry shortly.", "实验结果正在准备，请稍后重试。"],
+  "Benchmark calculation is pending; the portfolio history is current.": ["Benchmark calculation is pending; the portfolio history is current.", "基准曲线尚待计算，投资组合历史已更新。"],
   "activity.kind.replay_completed": ["Replay completed", "回放完成"],
   "activity.summary.replay_completed": ["Replay reached its last recorded time point.", "历史回放已到最后一个时间点。"],
   "activity.kind.final_session_order_pending": ["Unfilled order at end", "回放结束时仍有订单"],

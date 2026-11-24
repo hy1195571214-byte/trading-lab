@@ -19,6 +19,7 @@ from . import engine, market_data, research_harness, score_fusion
 
 DB_PATH = Path(os.environ.get("TRADING_LAB_DB", Path(__file__).resolve().parents[1] / "trading_lab.sqlite3"))
 DATABASE_URL = os.environ.get('DATABASE_URL')
+EDGE_READ_MODELS = os.getenv('TRADING_LAB_EDGE_READ_MODELS', 'true' if DATABASE_URL else 'false').lower() == 'true'
 SECRET_PATH = Path(os.environ.get("TRADING_LAB_SECRET_FILE", Path(__file__).resolve().parents[1] / "data" / "secrets.json"))
 MARKET_KEY_PATH = Path(os.environ.get("TRADING_LAB_MARKET_KEY_FILE", Path(__file__).resolve().parents[1] / "data" / "market-data.key"))
 _collector_tasks: dict[str, asyncio.Task] = {}
@@ -156,6 +157,8 @@ def _init():
         CREATE TABLE IF NOT EXISTS experts(id TEXT PRIMARY KEY,name TEXT,version INTEGER,body TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS expert_library_archives(expert_id TEXT PRIMARY KEY REFERENCES experts(id),archived_at TEXT NOT NULL,reason TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS experiments(id TEXT PRIMARY KEY,name TEXT,status TEXT,config TEXT,state TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS edge_read_models(experiment_id TEXT PRIMARY KEY REFERENCES experiments(id),source_token TEXT NOT NULL,config_hash TEXT NOT NULL,body TEXT NOT NULL,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS edge_runtime_metadata(key TEXT PRIMARY KEY,body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT,experiment_id TEXT,event TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT);
         CREATE TABLE IF NOT EXISTS app_secrets(id TEXT PRIMARY KEY, ciphertext TEXT NOT NULL);
@@ -224,6 +227,11 @@ def _init():
                         'usage_indices':[i for i,x in enumerate(state.get('llm_usage',[])) if x.get('step_attempt_id')==active]})
             c.execute("UPDATE experiments SET status='paused',state=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(json.dumps(state),row['id']))
             c.execute('INSERT INTO events(experiment_id,event) VALUES(?,?)',(row['id'],json.dumps({'type':'recovered_after_restart','message':'Run paused during service restart; resume to continue.','interrupted_usage_indices':interrupted})))
+        if EDGE_READ_MODELS:
+            c.execute('INSERT INTO edge_runtime_metadata(key,body) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET body=excluded.body',('harness',json.dumps(harness_capabilities())))
+            for row in c.execute('SELECT * FROM experiments').fetchall():
+                cached=c.execute('SELECT source_token FROM edge_read_models WHERE experiment_id=?',(row['id'],)).fetchone()
+                if not cached or cached['source_token']!=_edge_source_token(row):_persist_edge_view(c,row['id'])
 
 def _market_fernet():
     """Use a dedicated local key, never the LLM secret file."""
@@ -301,6 +309,38 @@ def _save_experiment(eid,name,status,config,state):
         else:
             c.execute('INSERT INTO experiments(id,name,status,config,state,updated_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)',
                       (eid,name,status,json.dumps(config),json.dumps(state)))
+        _persist_edge_view(c,eid)
+
+def _edge_source_token(row):
+    # A row-version checksum, not a security digest. PostgreSQL's built-in md5
+    # lets the edge verify freshness without extensions or another state copy.
+    raw='\x1f'.join(str(row[key]) for key in ('config','state','status','name'))
+    return hashlib.md5(raw.encode(),usedforsecurity=False).hexdigest()
+
+def _persist_edge_view(connection,eid,view=None,expected_token=None):
+    if not EDGE_READ_MODELS:return
+    row=connection.execute('SELECT * FROM experiments WHERE id=?',(eid,)).fetchone()
+    if not row:return
+    token=_edge_source_token(row)
+    if expected_token is not None and token!=expected_token:return
+    cfg_hash=hashlib.sha256(row['config'].encode()).hexdigest()
+    if view is None:
+        view=_decode_exp(row,include_benchmark=False,include_db_events=False,cache_view=False)
+        old=connection.execute('SELECT body FROM edge_read_models WHERE experiment_id=? AND config_hash=?',(eid,cfg_hash)).fetchone()
+        cached=json.loads(old['body']) if old else {}
+        as_of=cached.get('benchmark_as_of_date')
+        current=view['state'].get('current_date')
+        if as_of and current and as_of<=current:
+            view.update({key:cached.get(key) for key in ('benchmark_history','benchmark_metrics','benchmark_as_of_date')})
+        view['benchmark_pending']=bool(current and view['config'].get('schema_version')!=2 and as_of!=current)
+    else:
+        view=copy.deepcopy(view)
+        view['benchmark_as_of_date']=view['state'].get('current_date')
+        view['benchmark_pending']=False
+    # The edge joins current database audit events separately, including events
+    # appended after this transaction. No historical event list is cached.
+    view['events']=view['state'].get('events',[])
+    connection.execute('INSERT INTO edge_read_models(experiment_id,source_token,config_hash,body) VALUES(?,?,?,?) ON CONFLICT(experiment_id) DO UPDATE SET source_token=excluded.source_token,config_hash=excluded.config_hash,body=excluded.body,updated_at=CURRENT_TIMESTAMP',(eid,token,cfg_hash,json.dumps(view)))
 
 def _merge_audit_records(existing, incoming, key):
     """Merge append-only audit records by stable ID, preferring newer updates."""
@@ -328,6 +368,7 @@ def _checkpoint_experiment_state(eid,state):
         saved['llm_calls']=max(int(latest.get('llm_calls',0)),int(state.get('llm_calls',0)))
         status=saved.get('status', 'running')
         c.execute('UPDATE experiments SET status=?,state=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(status,json.dumps(saved),eid))
+        _persist_edge_view(c,eid)
 
 def _usage_budget_charge(entry):
     actual=entry.get('estimated_cost_usd')
@@ -367,7 +408,7 @@ def _experiment(eid):
     r=_row('SELECT * FROM experiments WHERE id=?',(eid,))
     if not r:raise HTTPException(404,'Experiment not found')
     return r
-def _decode_exp(r, *, include_benchmark=True):
+def _decode_exp(r, *, include_benchmark=True, include_db_events=True, cache_view=True):
     cfg=json.loads(r['config'])
     # Older experiment snapshots may have captured pre-migration settings.
     # Sanitize at the response boundary as well as during settings migration.
@@ -398,8 +439,11 @@ def _decode_exp(r, *, include_benchmark=True):
             try:stale=(market_data.parse_timestamp(state['current_time'],'current_time')-market_data.parse_timestamp(price_time,'price_time')).total_seconds()>float(cfg.get('max_live_data_age_seconds',120))
             except (ValueError,TypeError):stale=True
         holdings.append({'symbol':symbol,'quantity':position.get('quantity',0),'weight':position.get('quantity',0)*position.get('last_price',0)/state.get('equity',1) if state.get('equity') else 0,'market_value':position.get('quantity',0)*position.get('last_price',0),'price_date':price_time,'price_time':price_time,'is_stale':stale})
-    state_events=state.get('events',[]); db_events=[{'id':x['id'],'created_at':x['created_at'],**json.loads(x['event'])} for x in _rows('SELECT * FROM events WHERE experiment_id=? ORDER BY id',(r['id'],))]
-    return {'id':r['id'],'name':r['name'],'status':r['status'],'config':cfg,'state':state,'metrics':metrics,'history':state.get('history',[]),'benchmark_history':benchmark_history,'benchmark_metrics':benchmark_metrics,'decisions':state.get('decisions',[]),'orders':state.get('orders',[]),'events':state_events+db_events,'holdings':holdings,'expert_opinions':state.get('expert_opinions',[]),'coordination':state.get('coordination'),'llm_usage':state.get('llm_usage',[]),'decision_traces':state.get('decision_traces',[])}
+    state_events=state.get('events',[]); db_events=[{'id':x['id'],'created_at':x['created_at'],**json.loads(x['event'])} for x in _rows('SELECT * FROM events WHERE experiment_id=? ORDER BY id',(r['id'],))] if include_db_events else []
+    result={'id':r['id'],'name':r['name'],'status':r['status'],'config':cfg,'state':state,'metrics':metrics,'history':state.get('history',[]),'benchmark_history':benchmark_history,'benchmark_metrics':benchmark_metrics,'decisions':state.get('decisions',[]),'orders':state.get('orders',[]),'events':state_events+db_events,'holdings':holdings,'expert_opinions':state.get('expert_opinions',[]),'coordination':state.get('coordination'),'llm_usage':state.get('llm_usage',[]),'decision_traces':state.get('decision_traces',[])}
+    if EDGE_READ_MODELS and cache_view and include_benchmark:
+        with _db_lock,_connect() as c:_persist_edge_view(c,r['id'],result,_edge_source_token(r))
+    return result
 
 @app.get('/api/health')
 def health():return {'status':'ok','mode':'paper trading only','source_revision':os.getenv('RENDER_GIT_COMMIT')}
@@ -1755,6 +1799,7 @@ async def run_experiment(experiment_id):
                 current=c.execute('SELECT * FROM experiments WHERE id=?',(experiment_id,)).fetchone()
                 state=json.loads(current['state']); state['status']='running'
                 c.execute("UPDATE experiments SET status='running',state=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(json.dumps(state),experiment_id))
+                _persist_edge_view(c,experiment_id)
             _event(experiment_id,{'type':'run_started'})
         # If a process restarted while SQLite still said running, recover the
         # task from its persisted cursor without altering the experiment state.
@@ -1762,11 +1807,15 @@ async def run_experiment(experiment_id):
             while True:
                 async with _get_lock(experiment_id):
                     r=_experiment(experiment_id)
-                    if r['status'] in ('paused','completed','awaiting_review','error','failed'):return
+                    if r['status'] in ('paused','completed','awaiting_review','error','failed'):
+                        if EDGE_READ_MODELS and r['status'] in ('paused','completed','awaiting_review'):_decode_exp(r)
+                        return
                     # Full reports are built when requested by the UI, not on
                     # every intermediate background replay session.
                     detail=await _step_locked(experiment_id, include_benchmark=False)
-                    if detail['status'] in ('paused','completed','awaiting_review','error','failed'):return
+                    if detail['status'] in ('paused','completed','awaiting_review','error','failed'):
+                        if EDGE_READ_MODELS and detail['status'] in ('paused','completed','awaiting_review'):_decode_exp(_experiment(experiment_id))
+                        return
                 # Let health, pause, and other API requests run between bars.
                 # A positive yield prevents a tight replay from monopolizing
                 # the event loop while leaving bar and decision semantics intact.

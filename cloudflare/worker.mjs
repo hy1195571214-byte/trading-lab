@@ -1,3 +1,5 @@
+import { edgeData } from './edge-data.mjs';
+
 const security = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
@@ -22,6 +24,13 @@ export default {
       }
       if (!env.ORIGIN_TOKEN || env.ORIGIN_TOKEN.length < 32) return jsonError(503, "Cloud backend access is not configured.");
       if (Number(request.headers.get("Content-Length") || 0) > 5 * 1024 * 1024) return jsonError(413, "Upload exceeds the 5 MB cloud limit.");
+      const storageStarted = performance.now();
+      const stored = await edgeData(request, env);
+      if (stored) {
+        stored.headers.set("Server-Timing", `storage;dur=${(performance.now() - storageStarted).toFixed(1)}`);
+        for (const [key, value] of Object.entries(security)) stored.headers.set(key, value);
+        return stored;
+      }
       const target = new URL(incoming.pathname + incoming.search, origin);
       const headers = new Headers(request.headers);
       headers.delete("Host");

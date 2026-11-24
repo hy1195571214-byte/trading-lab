@@ -244,7 +244,7 @@ export default function ReplayDesk({ detail, selectedId, doStep, doRun, branch, 
             <div className="snapshot-card"><span className="eyebrow">{marketTime(day) || "—"} · {t("历史账户快照")}</span><div className="snapshot-grid"><div><small><LText id="资产净值"/></small><b>{money(selectedHistory?.equity)}</b></div><div><small><LText id="现金"/></small><b>{money(selectedHistory?.cash)}</b></div><div><small><LText id="持仓市值"/></small><b>{money(Number.isFinite(holdingsValue) ? holdingsValue : null)}</b></div><div><small>{timestampMode ? t("本 bar 收益") : t("当日收益")}</small><b className={((timestampMode ? selectedHistory?.interval_return : selectedHistory?.daily_return) || 0) < 0 ? "red" : "green"}>{pct(timestampMode ? selectedHistory?.interval_return : selectedHistory?.daily_return)}</b></div></div><small className="muted"><LText id="完整持仓明细始终显示在交易台下方。"/></small></div>
             
             {    <Panel title={t("资产曲线（截至所选时点）")}>
-      <Chart history={(detail.history || []).filter((x: Any) => historyVisibleAt(x, selectedAsOf))} benchmark={(detail.benchmark_history || []).filter((x: Any) => historyVisibleAt(x, selectedAsOf))} />
+      <Chart history={(detail.history || []).filter((x: Any) => historyVisibleAt(x, selectedAsOf))} benchmark={(detail.benchmark_history || []).filter((x: Any) => historyVisibleAt(x, selectedAsOf))} benchmarkPending={detail.benchmark_pending} />
       <div className="micro">{t("只展示所选时点及之前已记录的资产数据。")} {t("累计手续费")} {money(selectedHistory?.fees_paid_total, 2)}</div>
     </Panel>}
           </>}

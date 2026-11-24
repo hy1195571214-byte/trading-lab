@@ -85,6 +85,7 @@ def test_archiving_removes_library_choices_without_rewriting_experiment_history(
     with main._db_lock, main._connect() as connection:
         connection.execute('INSERT INTO expert_library_archives(expert_id,archived_at,reason) VALUES(?,?,?)',('momentum','2026-11-24T08:00:00Z','Retain only the five research experts'))
     assert 'momentum' not in [e['id'] for e in api.get('/api/experts').json()]
+
     assert api.get('/api/experts/momentum').json()==original
     historical=api.get('/api/experiments/'+parent['id']).json()
     assert historical['config']==parent['config']
@@ -96,6 +97,54 @@ def test_archiving_removes_library_choices_without_rewriting_experiment_history(
         assert response.status_code==422 and 'archived expert' in response.json()['detail']
     main._init()
     assert 'momentum' not in [e['id'] for e in api.get('/api/experts').json()]
+
+
+def test_edge_read_model_tracks_checkpoints_and_rejects_late_report_overwrites(api, monkeypatch):
+    monkeypatch.setattr(main,'EDGE_READ_MODELS',True)
+    created=api.post('/api/experiments',json=base_payload(api)).json()
+    eid=created['id']
+    row=main._row('SELECT * FROM experiments WHERE id=?',(eid,))
+    cached=main._row('SELECT * FROM edge_read_models WHERE experiment_id=?',(eid,))
+    assert cached['source_token']==main._edge_source_token(row)
+    assert json.loads(cached['body'])['metrics']==created['metrics']
+    stale_report=copy.deepcopy(created)
+    stepped=api.post('/api/experiments/'+eid+'/step').json()
+    latest=main._row('SELECT * FROM edge_read_models WHERE experiment_id=?',(eid,))
+    assert json.loads(latest['body'])['history']==stepped['history']
+    with main._connect() as connection:
+        main._persist_edge_view(connection,eid,stale_report,main._edge_source_token(row))
+    assert main._row('SELECT * FROM edge_read_models WHERE experiment_id=?',(eid,))['body']==latest['body']
+    checkpoint=copy.deepcopy(stepped['state']);checkpoint['status']='paused'
+    main._checkpoint_experiment_state(eid,checkpoint)
+    raw=main._row('SELECT * FROM experiments WHERE id=?',(eid,))
+    saved=main._row('SELECT * FROM edge_read_models WHERE experiment_id=?',(eid,))
+    assert saved['source_token']==main._edge_source_token(raw)
+    assert json.loads(saved['body'])['status']=='paused'
+
+
+def test_edge_read_model_failure_rolls_back_the_experiment_update(api, monkeypatch):
+    monkeypatch.setattr(main,'EDGE_READ_MODELS',True)
+    created=api.post('/api/experiments',json=base_payload(api)).json()
+    original=main._row('SELECT * FROM experiments WHERE id=?',(created['id'],))
+    def broken_view(*args,**kwargs):raise RuntimeError('materialization failed')
+    monkeypatch.setattr(main,'_decode_exp',broken_view)
+    with pytest.raises(RuntimeError,match='materialization failed'):
+        main._save_experiment(created['id'],'must roll back','paused',created['config'],created['state'])
+    assert main._row('SELECT * FROM experiments WHERE id=?',(created['id'],))==original
+
+
+def test_restart_recovery_updates_the_edge_view_in_the_same_transaction(api, monkeypatch):
+    monkeypatch.setattr(main,'EDGE_READ_MODELS',True)
+    created=api.post('/api/experiments',json=base_payload(api)).json()
+    state=copy.deepcopy(created['state']);state['status']='running'
+    main._save_experiment(created['id'],created['name'],'running',created['config'],state)
+    main._init()
+    row=main._row('SELECT * FROM experiments WHERE id=?',(created['id'],))
+    view=main._row('SELECT * FROM edge_read_models WHERE experiment_id=?',(created['id'],))
+    assert row['status']=='paused'
+    assert json.loads(view['body'])['status']=='paused'
+    assert view['source_token']==main._edge_source_token(row)
+    assert main._row("SELECT body FROM edge_runtime_metadata WHERE key='harness'")
 
 
 def test_daily_runner_defers_benchmark_and_matches_manual_steps(api, monkeypatch):

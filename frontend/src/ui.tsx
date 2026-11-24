@@ -94,14 +94,14 @@ export function KPIs({ detail }: any) {
     </div>
   );
 }
-export function Chart({ history = [], benchmark = [] }: any) {
+export function Chart({ history = [], benchmark = [], benchmarkPending = false }: any) {
   const { t } = useLocale();
   const valuesFor = (rows: any[]) =>
     (rows || [])
       .map((x: any) => Number(x.equity ?? x.value ?? x.portfolio_value))
       .filter(Number.isFinite);
   const portfolioValues = valuesFor(history);
-  const benchmarkValues = valuesFor(benchmark);
+  const benchmarkValues = valuesFor(benchmarkPending ? [] : benchmark);
   const returns = (values: number[]) =>
     values.map((value) => (value / values[0] - 1) * 100);
   const portfolioReturns = returns(portfolioValues);
@@ -123,9 +123,10 @@ export function Chart({ history = [], benchmark = [] }: any) {
   const benchmarkPoints = seriesPoints(benchmarkValues);
   return (
     <div className="chart">
+      {benchmarkPending && <p className="muted compact"><LText id="Benchmark calculation is pending; the portfolio history is current."/></p>}
       <div className="chartlegend">
         <span><LText id="● Portfolio"/></span>
-        {benchmark?.length > 0 && (
+        {!benchmarkPending && benchmark?.length > 0 && (
           <span className="muted"><LText id="● Buy &amp; hold benchmark"/></span>
         )}
       </div>
