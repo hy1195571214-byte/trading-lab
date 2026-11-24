@@ -12,6 +12,8 @@ services:
         value: production
       - key: DATABASE_URL
         sync: false
+      - key: TRADING_LAB_PUBLIC_WORKSPACE
+        value: "true"
       - key: TRADING_LAB_WORKSPACE_PASSWORD
         sync: false
       - key: TRADING_LAB_SESSION_SECRET
@@ -20,3 +22,4 @@ services:
         sync: false
       - key: TRADING_LAB_ENCRYPTION_KEY
         sync: false
+

@@ -21,7 +21,9 @@ SECRET_PATH = Path(os.environ.get("TRADING_LAB_SECRET_FILE", Path(__file__).reso
 @asynccontextmanager
 async def lifespan(_app):
     if os.getenv('TRADING_LAB_ENV','').lower()=='production':
-        missing=[name for name in ('DATABASE_URL','TRADING_LAB_WORKSPACE_PASSWORD','TRADING_LAB_SESSION_SECRET','TRADING_LAB_ORIGIN_TOKEN','TRADING_LAB_ENCRYPTION_KEY') if not os.getenv(name)]
+        required=('DATABASE_URL','TRADING_LAB_SESSION_SECRET','TRADING_LAB_ORIGIN_TOKEN','TRADING_LAB_ENCRYPTION_KEY')
+        if not _public_workspace(): required+=('TRADING_LAB_WORKSPACE_PASSWORD',)
+        missing=[name for name in required if not os.getenv(name)]
         if missing: raise RuntimeError('Missing required production configuration: '+', '.join(missing))
         _validate_production_config()
     _init()
@@ -43,7 +45,7 @@ def _constant_time_equal(left,right):
 def _validate_production_config():
     if not (os.getenv('DATABASE_URL','').startswith('postgres://') or os.getenv('DATABASE_URL','').startswith('postgresql://')):
         raise RuntimeError('DATABASE_URL must use a PostgreSQL connection URL')
-    if len(os.getenv('TRADING_LAB_WORKSPACE_PASSWORD',''))<12:
+    if not _public_workspace() and len(os.getenv('TRADING_LAB_WORKSPACE_PASSWORD',''))<12:
         raise RuntimeError('TRADING_LAB_WORKSPACE_PASSWORD must be at least 12 characters')
     for key in ('TRADING_LAB_SESSION_SECRET','TRADING_LAB_ORIGIN_TOKEN'):
         if len(os.getenv(key,'').encode('utf-8'))<32: raise RuntimeError(key+' must be at least 32 bytes')
@@ -52,7 +54,8 @@ def _validate_production_config():
         Fernet(os.getenv('TRADING_LAB_ENCRYPTION_KEY','').encode())
     except Exception as exc: raise RuntimeError('TRADING_LAB_ENCRYPTION_KEY must be a valid Fernet key') from exc
 
-def _auth_required(): return bool(os.getenv('TRADING_LAB_WORKSPACE_PASSWORD'))
+def _public_workspace(): return os.getenv('TRADING_LAB_PUBLIC_WORKSPACE','').strip().lower()=='true'
+def _auth_required(): return not _public_workspace() and bool(os.getenv('TRADING_LAB_WORKSPACE_PASSWORD'))
 def _session_secret(): return os.getenv('TRADING_LAB_SESSION_SECRET','')
 def _origin_required(): return bool(os.getenv('TRADING_LAB_ORIGIN_TOKEN'))
 def _session_token():
@@ -91,8 +94,8 @@ def auth_status(request:Request):
 
 @app.post('/api/auth/login')
 def auth_login(request:Request,body:dict):
+    if not _auth_required():return {'authenticated':True}
     configured=os.getenv('TRADING_LAB_WORKSPACE_PASSWORD')
-    if not configured:return {'authenticated':True}
     ip=request.client.host if request.client else 'unknown'; now=time.time(); attempts=[x for x in _login_attempts.get(ip,[]) if now-x<300]
     if len(attempts)>=10:raise HTTPException(429,'Too many login attempts; try again in five minutes')
     attempts.append(now);_login_attempts[ip]=attempts
@@ -105,7 +108,7 @@ def auth_login(request:Request,body:dict):
 
 @app.post('/api/auth/logout')
 def auth_logout():
-    response=JSONResponse({'authenticated':False});response.delete_cookie('trading_lab_session',path='/');return response
+    response=JSONResponse({'authenticated':not _auth_required()});response.delete_cookie('trading_lab_session',path='/');return response
 
 def _connect():
     if DATABASE_URL:
@@ -759,3 +762,4 @@ def export_experiment(experiment_id,format:str='json'):
         for o in report['orders']:writer.writerow(['order',o.get('created_date'),o.get('id'),o.get('status'),o.get('side'),json.dumps(o.get('target_weights',{})),'',json.dumps(o)])
         return Response(output.getvalue(),media_type='text/csv',headers={'Content-Disposition':f'attachment; filename="trading-lab-{experiment_id}.csv"'})
     raise HTTPException(422,'format must be json or csv')
+

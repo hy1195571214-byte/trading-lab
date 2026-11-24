@@ -26,7 +26,8 @@ Backend environment (never commit values):
 | --- | --- |
 | `TRADING_LAB_ENV` | `production` enables required-config checks and Secure cookies |
 | `DATABASE_URL` | Neon PostgreSQL connection string; require TLS (`sslmode=require`) |
-| `TRADING_LAB_WORKSPACE_PASSWORD` | Shared workspace password, at least 12 characters; each permitted team member uses it |
+| `TRADING_LAB_PUBLIC_WORKSPACE` | Set to `true` for the user-requested password-free public workspace; default application behavior remains private |
+| `TRADING_LAB_WORKSPACE_PASSWORD` | Required only with password access enabled; shared workspace password, at least 12 characters |
 | `TRADING_LAB_SESSION_SECRET` | Independent random signing secret, at least 32 bytes |
 | `TRADING_LAB_ORIGIN_TOKEN` | Independent random origin secret, at least 32 bytes; must match Worker `ORIGIN_TOKEN` |
 | `TRADING_LAB_ENCRYPTION_KEY` | Fernet key; required to preserve encrypted LLM keys across restarts |
@@ -35,7 +36,7 @@ Cloudflare Worker runtime:
 - `ORIGIN_URL`: HTTPS Render service origin, with no path, credentials, query or fragment.
 - `ORIGIN_TOKEN`: secret matching backend `TRADING_LAB_ORIGIN_TOKEN`; set with Wrangler secret input, never a tracked configuration value.
 
-Browser authenticates to `/api/auth/login`; backend returns a signed HttpOnly/Secure/SameSite=Lax cookie. Status and logout use `/api/auth/status` and `/api/auth/logout`. All business APIs require the session; direct backend calls also require the internal gateway token. `/api/health` remains a minimal public health check. This is one shared workspace, not independent user accounts; do not describe it as per-user data isolation.
+With `TRADING_LAB_PUBLIC_WORKSPACE=true`, `/api/auth/status` returns `auth_required: false` and the browser enters directly. Anyone with the public link can view and operate the shared workspace. In password mode, the browser authenticates to `/api/auth/login` using a signed HttpOnly/Secure/SameSite=Lax cookie. Direct backend business calls require the internal gateway token in both modes. `/api/health` remains a minimal public health check. This is one shared workspace, not independent user accounts; do not describe it as per-user data isolation.
 
 ## Provision and publish order
 
@@ -49,6 +50,12 @@ Browser authenticates to `/api/auth/login`; backend returns a signed HttpOnly/Se
 
 No local SQLite, API key, existing private data or personal files are automatically migrated. Seed synthetic data only. The production model endpoint is unconfigured until the owner chooses one. A model provider may charge separately; deployment itself must not issue paid LLM calls.
 
+## Password-free public access — 2026-11-24
+
+The user requested removal of the public website password. The Docker image and Render blueprint explicitly enable `TRADING_LAB_PUBLIC_WORKSPACE=true`. Existing passwords are ignored in this mode; no password or signing key is placed in frontend assets. The internal origin token and encrypted credential storage remain required. Set the flag to `false` with a valid workspace password to restore password login. This setting applies to the public deployment; local launches keep their existing environment-driven access behavior.
+
+The verification below records the original password-protected deployment.
+
 ## Verified deployment — 2026-10-28
 
 - Public platform: https://trading-lab.hy1195571214.workers.dev
@@ -60,10 +67,11 @@ No local SQLite, API key, existing private data or personal files are automatica
 
 Verified local checks: 48 backend/auth/engine tests; 4 gateway tests; TypeScript/production build; Cloudflare deployment validation. Verified cloud checks: real PostgreSQL schema, encrypted credential roundtrip, persistence, auth protection, Secure/HttpOnly login cookie, logout, safe settings responses, JSON/CSV exports. A public browser created `Public browser verification — DEMO`, advanced three sessions, approved proposals, observed next-open fills, and rejected the final proposal. The browser console reported no errors or warnings. An independent HTTP client verified the same public Cloudflare API.
 
-### Signing in
+### Original password-mode signing in
 
-Open the public platform URL. The owner can view the shared workspace password in Render → `trading-lab-api` → Environment → `TRADING_LAB_WORKSPACE_PASSWORD`. No password is included in this document, source, browser bundle, or deployment log. Share the workspace password only with the intended teammates. This is one shared research workspace; individual user accounts and per-user data isolation are not implemented.
+The current public workspace opens without signing in. The following describes password mode only. The owner can view the shared workspace password in Render → `trading-lab-api` → Environment → `TRADING_LAB_WORKSPACE_PASSWORD`. No password is included in this document, source, browser bundle, or deployment log. Share the workspace password only with the intended teammates. This is one shared research workspace; individual user accounts and per-user data isolation are not implemented.
 
-The owner is left signed in in the current app browser. Other devices need the shared workspace password. Render Free can take roughly a minute to wake after inactivity. A chosen LLM provider is still unconfigured; current acceptance records use clearly labelled synthetic/demo strategies and do not represent investment results or real-model validation.
+At original deployment verification, the owner was left signed in in the app browser and other devices needed the shared workspace password. Password-free public access now supersedes that requirement. Render Free can take roughly a minute to wake after inactivity. A chosen LLM provider is still unconfigured; current acceptance records use clearly labelled synthetic/demo strategies and do not represent investment results or real-model validation.
 
 For frontend-only/source-documentation changes, `[skip render]` in the Git commit message avoids an unnecessary backend rebuild. Rebuild the frontend before running `scripts/cloudflare.sh deploy`; deploy the updated backend normally for actual backend source changes. Secrets stay in the providers' runtime configuration and must never be committed.
+

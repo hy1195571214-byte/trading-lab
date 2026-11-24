@@ -6,7 +6,7 @@ The interface follows the approved Figma graphite/lime design with monochrome pi
 
 ## Public deployment
 
-Open https://trading-lab.hy1195571214.workers.dev. The platform uses a shared workspace password. The owner can view it in Render → trading-lab-api → Environment → TRADING_LAB_WORKSPACE_PASSWORD. Render Free may take about a minute to wake after inactivity. Deployment configuration and verification are in `docs/CLOUD_DEPLOYMENT.md`.
+Open https://trading-lab.hy1195571214.workers.dev. The public deployment opens directly without a password. Anyone with the link can view and operate this shared research workspace. Render Free may take about a minute to wake after inactivity. Deployment configuration and verification are in `docs/CLOUD_DEPLOYMENT.md`.
 
 ## Start locally
 
@@ -52,3 +52,4 @@ An Agent experiment obtains independent expert opinions and a final coordinated 
 - Backend details and tests: `backend/README.md`
 
 Run backend and engine checks with `.venv/bin/python -m pytest backend/tests backend/app/engine_tests -q`; build the frontend with `npm --prefix frontend run build`.
+

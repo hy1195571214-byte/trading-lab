@@ -532,3 +532,60 @@ def test_low_dollar_budget_stops_before_call_and_holds_current_date(api, monkeyp
     detail=api.post(f'/api/experiments/{eid}/step').json()
     assert detail['status']=='paused' and detail['state']['needs_decision'] is True
     assert detail['state']['llm_calls']==0 and detail['decisions']==[]
+
+def test_public_workspace_skips_password_but_preserves_origin_gate(api, monkeypatch):
+    monkeypatch.setenv('TRADING_LAB_PUBLIC_WORKSPACE', 'true')
+    monkeypatch.setenv('TRADING_LAB_WORKSPACE_PASSWORD', 'a private retained password')
+    monkeypatch.setenv('TRADING_LAB_ORIGIN_TOKEN', 'public-workspace-origin-token')
+    headers = {'X-Trading-Lab-Origin-Token': 'public-workspace-origin-token'}
+    assert api.get('/api/auth/status').status_code == 403
+    assert api.get('/api/datasets').status_code == 403
+    assert api.get('/api/auth/status', headers=headers).json() == {
+        'auth_required': False, 'authenticated': True,
+    }
+    assert api.get('/api/datasets', headers=headers).status_code == 200
+    assert api.get('/api/experiments', headers=headers).status_code == 200
+    login = api.post('/api/auth/login', headers=headers, json={})
+    assert login.json() == {'authenticated': True}
+    assert 'set-cookie' not in login.headers
+    assert api.post('/api/auth/logout', headers=headers).json() == {'authenticated': True}
+    settings = api.get('/api/settings', headers=headers)
+    assert settings.status_code == 200
+    assert 'api_key' not in settings.json()
+    assert 'a private retained password' not in settings.text
+
+
+def test_public_workspace_can_restore_password_access(api, monkeypatch):
+    monkeypatch.setenv('TRADING_LAB_WORKSPACE_PASSWORD', 'a private retained password')
+    for value in ('false', 'yes', 'typo'):
+        monkeypatch.setenv('TRADING_LAB_PUBLIC_WORKSPACE', value)
+        assert api.get('/api/auth/status').json()['auth_required'] is True
+        assert api.get('/api/datasets').status_code == 401
+    monkeypatch.setenv('TRADING_LAB_PUBLIC_WORKSPACE', 'true')
+    assert api.get('/api/datasets').status_code == 200
+    monkeypatch.setenv('TRADING_LAB_PUBLIC_WORKSPACE', 'false')
+    assert api.get('/api/datasets').status_code == 401
+
+
+def test_public_production_startup_without_password_preserves_required_secrets(monkeypatch):
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv('TRADING_LAB_ENV', 'production')
+    monkeypatch.setenv('TRADING_LAB_PUBLIC_WORKSPACE', 'true')
+    monkeypatch.setenv('DATABASE_URL', 'postgresql://sample')
+    monkeypatch.delenv('TRADING_LAB_WORKSPACE_PASSWORD', raising=False)
+    monkeypatch.setenv('TRADING_LAB_SESSION_SECRET', 's' * 32)
+    monkeypatch.setenv('TRADING_LAB_ORIGIN_TOKEN', 'o' * 32)
+    monkeypatch.setenv('TRADING_LAB_ENCRYPTION_KEY', Fernet.generate_key().decode())
+    monkeypatch.setattr(main, '_init', lambda: None)
+    with TestClient(main.app) as client:
+        status = client.get('/api/auth/status', headers={'X-Trading-Lab-Origin-Token': 'o' * 32})
+        assert status.json() == {'auth_required': False, 'authenticated': True}
+    monkeypatch.setenv('TRADING_LAB_ORIGIN_TOKEN', 'short')
+    with pytest.raises(RuntimeError, match='TRADING_LAB_ORIGIN_TOKEN'):
+        main._validate_production_config()
+    monkeypatch.setenv('TRADING_LAB_ORIGIN_TOKEN', 'o' * 32)
+    monkeypatch.setenv('TRADING_LAB_PUBLIC_WORKSPACE', 'false')
+    with pytest.raises(RuntimeError, match='TRADING_LAB_WORKSPACE_PASSWORD'):
+        with TestClient(main.app):
+            pass
+
