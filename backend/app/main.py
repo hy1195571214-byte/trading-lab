@@ -154,6 +154,7 @@ def _init():
         schema='''
         CREATE TABLE IF NOT EXISTS datasets(id TEXT PRIMARY KEY,name TEXT,checksum TEXT,synthetic INTEGER,metadata TEXT,bars TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS experts(id TEXT PRIMARY KEY,name TEXT,version INTEGER,body TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS expert_library_archives(expert_id TEXT PRIMARY KEY REFERENCES experts(id),archived_at TEXT NOT NULL,reason TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS experiments(id TEXT PRIMARY KEY,name TEXT,status TEXT,config TEXT,state TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP,updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT,experiment_id TEXT,event TEXT,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS settings(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT);
@@ -844,7 +845,7 @@ async def import_dataset(file:UploadFile=File(...),name:str|None=Form(None),adju
     return {'id':did,'dataset_id':did,'name':name or file.filename,'checksum':checksum,'synthetic':bool(synthetic),**meta}
 
 @app.get('/api/experts')
-def experts():return [json.loads(r['body']) for r in _rows('SELECT body FROM experts ORDER BY name')]
+def experts():return [json.loads(r['body']) for r in _rows('SELECT e.body FROM experts e LEFT JOIN expert_library_archives a ON a.expert_id=e.id WHERE a.expert_id IS NULL ORDER BY e.name')]
 @app.post('/api/experts')
 def create_expert(body:dict):
     required=('name','strategy','description','objective','horizon','required_data','instructions','risk_notes','role')
@@ -863,6 +864,8 @@ def expert(expert_id):
     return json.loads(r['body'])
 
 def _check_expert_activation(expert):
+    if _row('SELECT expert_id FROM expert_library_archives WHERE expert_id=?',(expert.get('id'),)):
+        raise HTTPException(422, f"{expert['name']}: archived expert; unavailable for new team selections")
     # Evidence drafts may be reviewed in the library but must not enter a
     # historical coordinator/fusion path that has not adopted system-only style.
     if expert.get('activation_status') == 'research_only':

@@ -79,6 +79,25 @@ def test_research_card_is_reviewable_but_blocked_at_all_team_entry_points(api):
     assert unchanged['config']['expert_snapshots']==parent['config']['expert_snapshots']
 
 
+def test_archiving_removes_library_choices_without_rewriting_experiment_history(api):
+    parent=api.post('/api/experiments',json=base_payload(api)).json()
+    original=api.get('/api/experts/momentum').json()
+    with main._db_lock, main._connect() as connection:
+        connection.execute('INSERT INTO expert_library_archives(expert_id,archived_at,reason) VALUES(?,?,?)',('momentum','2026-11-24T08:00:00Z','Retain only the five research experts'))
+    assert 'momentum' not in [e['id'] for e in api.get('/api/experts').json()]
+    assert api.get('/api/experts/momentum').json()==original
+    historical=api.get('/api/experiments/'+parent['id']).json()
+    assert historical['config']==parent['config']
+    assert api.post('/api/experiments/'+parent['id']+'/step').status_code==200
+    for path, body in (('/api/experiments',base_payload(api)),
+                       ('/api/experiments/'+parent['id']+'/branch',{}),
+                       ('/api/experiments/'+parent['id']+'/team',{'team':[{'expert_id':'momentum','role':'trader','enabled':True}]})):
+        response=api.post(path,json=body)
+        assert response.status_code==422 and 'archived expert' in response.json()['detail']
+    main._init()
+    assert 'momentum' not in [e['id'] for e in api.get('/api/experts').json()]
+
+
 def test_daily_runner_defers_benchmark_and_matches_manual_steps(api, monkeypatch):
     import httpx
 
