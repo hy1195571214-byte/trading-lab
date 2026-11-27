@@ -28,7 +28,7 @@ export default function ReplayNews({experimentId, asOf, symbol}: {experimentId:s
     <summary><b>{t("Contemporaneous news")} · {symbol}</b></summary>
     <p className="muted">{t("News is background material for this rule-based demo; it does not generate trades. Dates use a conservative visibility delay, not verified publication times.")}</p>
     {loading?<p>{t("Loading news for this replay point…")}</p>:error?<p className="error"><ErrorMessage error={error}/></p>:!items.length?<p className="muted">{t("No news is available at this replay point.")}</p>:<ul>
-      {items.map(item=><li key={item.id} style={{marginBottom:12}}><a href={/^https?:\/\//.test(item.url||"")?item.url:undefined} target="_blank" rel="noreferrer">{item.title}</a><small style={{display:"block"}}>{item.source} · {t("Available from")}: {item.available_at}</small></li>)}
+      {items.map(item=><li key={item.id} style={{marginBottom:12}}><a style={{color:"#d6ee3e",textUnderlineOffset:3}} href={/^https?:\/\//.test(item.url||"")?item.url:undefined} target="_blank" rel="noreferrer">{item.title}</a><small style={{display:"block"}}>{item.source} · {t("Available from")}: {item.available_at}</small></li>)}
     </ul>}
   </details>;
 }
