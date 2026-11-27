@@ -16,6 +16,7 @@ paths=['.gitignore','.dockerignore','.env.example','AGENTS.md','README.md','Dock
        'scripts/setup.sh','scripts/dev.sh','scripts/dev.py','scripts/cloudflare.sh','scripts/export-cloud-source.py']
 for pattern in ['backend/app/**/*.py','backend/app/vendor/*','backend/tests/*.py',
                 'frontend/src/*','frontend/public/**/*','frontend/tests/*',
+                'cloudflare/*.mjs','cloudflare/fixtures/*.json',
                 'scripts/*.py','scripts/*.sh','docs/*.md']:
  paths.extend(str(p.relative_to(root)) for p in root.glob(pattern) if p.is_file())
 files=[]

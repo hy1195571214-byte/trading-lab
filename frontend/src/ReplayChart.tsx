@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Any } from "./api";
 import { LText, useLocale, enumLabel } from "./i18n";
-import { Empty, ErrorMessage } from "./ui";
+import { Btn, Empty, ErrorMessage } from "./ui";
 import { candleViewport, candleX, candlePriceAxis, candleDateTicks } from "./candleViewport";
 import "./ReplayChart.css";
 import {
@@ -64,6 +64,8 @@ type ReplayChartProps = {
   market: Any | null;
   marketLoading: boolean;
   marketError: Error | string;
+  marketRetrySeconds?: number;
+  onReloadMarket?: () => void;
   symbol: string;
   day: string;
   selectedAsOf: string;
@@ -78,6 +80,8 @@ export default function ReplayChart({
   market,
   marketLoading,
   marketError,
+  marketRetrySeconds = 0,
+  onReloadMarket,
   symbol,
   day,
   selectedAsOf,
@@ -508,7 +512,14 @@ export default function ReplayChart({
         </Empty>
       ) : marketError ? (
         <div className="error">
-          {t("行情暂不可用：")} <ErrorMessage error={marketError} />
+          {(marketError as any)?.status === 429
+            ? t("Market data requests are temporarily limited. Please wait and try again.")
+            : <>{t("行情暂不可用：")} <ErrorMessage error={marketError} /></>}
+          {onReloadMarket && <div className="toolbar">
+            <Btn disabled={marketRetrySeconds > 0} onClick={onReloadMarket}>
+              {marketRetrySeconds > 0 ? t("Retry in {seconds}s", { seconds: marketRetrySeconds }) : t("Retry market data")}
+            </Btn>
+          </div>}
         </div>
       ) : !bars.length ? (
         <Empty>

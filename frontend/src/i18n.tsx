@@ -2,6 +2,14 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 export type Locale = "en" | "zh-CN";
 type Params = Record<string, string | number>;
 const catalog: Record<string, [string, string]> = {
+  "Contemporaneous news": ["Contemporaneous news", "同期新闻"],
+  "News is background material for this rule-based demo; it does not generate trades. Dates use a conservative visibility delay, not verified publication times.": ["News is background material for this rule-based demo; it does not generate trades. Dates use a conservative visibility delay, not verified publication times.", "新闻仅供这次规则演示查看背景，不参与生成交易。新闻按日期加延迟后展示，并非已核实的精确发布时间。"],
+  "Loading news for this replay point…": ["Loading news for this replay point…", "正在读取这个回放时点的新闻…"],
+  "No news is available at this replay point.": ["No news is available at this replay point.", "这个回放时点尚无可展示的新闻。"],
+  "Available from": ["Available from", "回放中可见时间"],
+  "Market data requests are temporarily limited. Please wait and try again.": ["Market data requests are temporarily limited. Please wait and try again.", "行情请求暂时受限，请稍后重试。"],
+  "Retry market data": ["Retry market data", "重新加载行情"],
+  "Retry in {seconds}s": ["Retry in {seconds}s", "{seconds} 秒后可重试"],
   "expert.researchStatus": ["For review only. Trading is not enabled yet.", "目前仅供查看和研究，暂不能加入交易。"],
   "expert.decisionPrinciples": ["How this style approaches a decision", "如何作出交易判断"],
   "expert.principlesIntro": ["These principles summarize the retained public material. Their trading performance has not been tested.", "以下原则根据已收集的公开资料整理，还没有验证交易效果。"],

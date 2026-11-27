@@ -1,11 +1,13 @@
 import { LText, useLocale, enumLabel } from "./i18n";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { req, Any } from "./api";
+import { retryMarketRead } from "./marketReadRetry";
 import { Btn, Chart, Empty, money, pct, ErrorMessage } from "./ui";
 import { ScrollRegion } from "./ScrollRegion";
 import { AnalysisPanel, QuantDetails } from "./FourMode";
 
 import ReplayChart from "./ReplayChart";
+import ReplayNews from "./ReplayNews";
 import { ProposalAllocation } from "./ProposalAllocation";
 import HoldingsPanel from "./HoldingsPanel";
 import { historicalMarketValue, holdingsAtSnapshot } from "./portfolio";
@@ -28,6 +30,8 @@ export default function ReplayDesk({ detail, selectedId, doStep, doRun, branch, 
   const [market, setMarket] = useState<Any | null>(null);
   const [marketError, setMarketError] = useState<Error | string>("");
   const [marketLoading, setMarketLoading] = useState(false);
+  const [marketReloadKey, reloadMarket] = useState(0);
+  const [marketRetrySeconds, setMarketRetrySeconds] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [liveStatus, setLiveStatus] = useState<Any | null>(null);
@@ -109,14 +113,26 @@ export default function ReplayDesk({ detail, selectedId, doStep, doRun, branch, 
   useEffect(() => {
     if (!detail?.id || !marketThrough) { setMarket(null); setMarketError(""); setMarketLoading(false); return; }
     let cancelled = false;
+    const controller = new AbortController();
     setMarketLoading(true); setMarketError(""); setMarket(null);
     const query = new URLSearchParams({ as_of: marketThrough });
-    req(`/experiments/${detail.id}/market?${query}`)
+    retryMarketRead(() => req(`/experiments/${detail.id}/market?${query}`, { signal: controller.signal }), controller.signal)
       .then((data) => { if (!cancelled) setMarket(data); })
       .catch((e: any) => { if (!cancelled) setMarketError(e instanceof Error ? e : t("无法读取行情")); })
       .finally(() => { if (!cancelled) setMarketLoading(false); });
-    return () => { cancelled = true; };
-  }, [detail?.id, marketThrough]);
+    return () => { cancelled = true; controller.abort(); };
+  }, [detail?.id, marketThrough, marketReloadKey]);
+  useEffect(() => {
+    if ((marketError as any)?.status !== 429) { setMarketRetrySeconds(0); return; }
+    const until = Date.now() + ((marketError as any).retryAfterMs ?? 3000);
+    setMarketRetrySeconds(Math.max(0, Math.ceil((until - Date.now()) / 1000)));
+    const timer = window.setInterval(() => {
+      const seconds = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+      setMarketRetrySeconds(seconds);
+      if (!seconds) window.clearInterval(timer);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [marketError]);
 
   if (!detail || (selectedId && detail.id !== selectedId)) return null;
   const waitingForFirstBar = timestampMode && !marketThrough;
@@ -211,10 +227,14 @@ export default function ReplayDesk({ detail, selectedId, doStep, doRun, branch, 
       <div className="replay-charts" aria-label={t("desk.charts")}>
         {displayedSymbols.map((chartSymbol) => (
           <ReplayChart key={chartSymbol} detail={detail} market={market} marketLoading={marketLoading}
-            marketError={marketError} symbol={chartSymbol} day={day} selectedAsOf={selectedAsOf}
+            marketError={marketError} marketRetrySeconds={marketRetrySeconds}
+            onReloadMarket={() => { if (!marketLoading && !marketRetrySeconds) reloadMarket(key => key + 1); }}
+            symbol={chartSymbol} day={day} selectedAsOf={selectedAsOf}
             latest={latest} waitingForFirstBar={waitingForFirstBar} onPause={() => setPlaying(false)}
             onNavigate={(sourceSymbol, sourceDay) => { setPlaying(false); chooseSymbol(sourceSymbol); setDay(sourceDay); }} />
         ))}
+        {!timestampMode && detail.config?.demonstration?.news_role && detail.config?.evidence_pack_id &&
+          <ReplayNews experimentId={detail.id} asOf={selectedAsOf} symbol={symbol} />}
       </div>
       <section className="replay-side desk-tabs-shell" aria-label={timestampMode ? t("时间点详情") : t("交易日详情")}>
         <div className="desk-tabs" role="tablist" aria-label={t("交易台信息")} onKeyDown={(e) => {

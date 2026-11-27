@@ -1,4 +1,5 @@
 import { neon } from '@neondatabase/serverless';
+import { dailyMarketSnapshot, dailyReadContext } from './daily-market.mjs';
 
 const defaults = {base_url:'',model:'',max_calls:100,budget_usd:10,input_cost_per_million:null,output_cost_per_million:null};
 const tokenMatch = "m.source_token=md5(e.config || chr(31) || e.state || chr(31) || e.status || chr(31) || e.name)";
@@ -46,7 +47,7 @@ export async function edgeData(request, env, dependencies={}) {
  if(path==='/api/auth/status'&&method==='GET')return output({auth_required:false,authenticated:true});
  if(path==='/api/auth/logout'&&method==='POST')return output({authenticated:true},200,{'Set-Cookie':'trading_lab_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax'});
  const simpleReads=new Set(['/api/health','/api/experts','/api/datasets','/api/experiments','/api/reviews','/api/activity','/api/settings','/api/harness','/api/harness/evidence-packs','/api/market/settings']);
- const single=/^\/api\/(experts|datasets|experiments)\/([^/]+)(?:\/(analysis|export))?$/.exec(path);
+ const single=/^\/api\/(experts|datasets|experiments)\/([^/]+)(?:\/(analysis|export|market|news))?$/.exec(path);
  if(method==='GET'&&single?.[1]==='experiments'&&!single[3]&&url.searchParams.get('live')==='1')return null;
  const read=method==='GET'&&(simpleReads.has(path)||single&&(!single[3]||single[1]==='experiments'));
  const write=(path==='/api/experts'&&method==='POST')||(path==='/api/settings'&&method==='PUT')||(path==='/api/market/settings'&&method==='PUT')||(path==='/api/datasets/import'&&method==='POST');
@@ -107,6 +108,21 @@ export async function edgeData(request, env, dependencies={}) {
    await sql.transaction([q('INSERT INTO datasets(id,name,checksum,synthetic,metadata,bars) VALUES($1,$2,$3,$4,$5,$6)',[id,name,checksum,synthetic?1:0,JSON.stringify(meta),JSON.stringify(bars)]),audit('dataset_imported',{dataset_id:id,checksum,rows:bars.length,synthetic})]);return output({id,dataset_id:id,name,checksum,synthetic,...meta});
   }
   if(single){const id=decodeURIComponent(single[2]);if(single[1]==='experts'){const rows=await q('SELECT body FROM experts WHERE id=$1',[id]);if(!rows[0])fail(404,'Expert not found');return output(parse(rows[0].body));}if(single[1]==='datasets'){const rows=await q('SELECT id,name,checksum,synthetic,metadata FROM datasets WHERE id=$1',[id]);if(!rows[0])fail(404,'Dataset not found');const r=rows[0];return output({id:r.id,name:r.name,checksum:r.checksum,synthetic:Number(r.synthetic)!==0,...parse(r.metadata)});}
+   if(single[3]==='market'||single[3]==='news'){
+    const rows=await q('SELECT config,state FROM experiments WHERE id=$1',[id]);if(!rows[0])fail(404,'Experiment not found');const cfg=parse(rows[0].config),state=parse(rows[0].state);
+    if(cfg.schema_version===2)return null;
+    const asOf=url.searchParams.getAll('as_of').at(-1)??null,symbol=url.searchParams.getAll('symbol').at(-1)??null;
+    if(single[3]==='news'){
+     const context=dailyReadContext(cfg,state,asOf,symbol);
+     if(!cfg.evidence_pack_id||!context.cutoff)return output({experiment_id:id,as_of:context.requested,items:[],role:'context_only'});
+     const packs=await q('SELECT checksum FROM evidence_packs WHERE id=$1',[cfg.evidence_pack_id]);if(!packs[0])fail(409,'Pinned evidence pack is missing');if(packs[0].checksum!==cfg.evidence_pack_checksum)fail(409,'Pinned evidence pack checksum mismatch');
+     const times=await q(`SELECT to_char((($1::date + TIME '16:00') AT TIME ZONE 'America/New_York') AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cutoff`,[context.cutoff]);
+     const rows=await q(`SELECT i.body FROM evidence_items i WHERE i.pack_id=$1 AND i.kind='news' AND i.available_at<=$2 AND i.item_id IN (SELECT item_id FROM evidence_symbols WHERE pack_id=$1 AND kind='news' AND symbol=ANY($3::text[]) AND available_at<=$2) ORDER BY i.available_at DESC,i.item_id DESC LIMIT 10`,[cfg.evidence_pack_id,times[0].cutoff,symbol?[symbol]:context.symbols]);
+     return output({experiment_id:id,as_of:context.requested,cutoff:times[0].cutoff,items:rows.map(row=>parse(row.body)),role:'context_only',availability:'Derived from reported dates; not verified exact publication times'});
+    }
+    const datasets=await q('SELECT bars,checksum,synthetic FROM datasets WHERE id=$1',[cfg.dataset_id]);
+    return output(dailyMarketSnapshot(id,cfg,state,datasets[0]||null,asOf,symbol));
+   }
    if(single[3]==='export'&&(url.searchParams.get('format')||'json')!=='json')return null;
    const rows=await q(`SELECT e.id,m.body FROM experiments e LEFT JOIN edge_read_models m ON m.experiment_id=e.id AND ${tokenMatch} WHERE e.id=$1`,[id]);if(!rows[0])fail(404,'Experiment not found');if(!rows[0].body)fail(503,'Saved experiment view is being prepared. Retry shortly.');const view=parse(rows[0].body);
    if(single[3]==='analysis')return output(analysis(view));const events=await q('SELECT id,event,created_at FROM events WHERE experiment_id=$1 ORDER BY id',[id]);view.events=[...(view.state.events||[]),...events.map(r=>({id:Number(r.id),created_at:r.created_at,...parse(r.event)}))];
