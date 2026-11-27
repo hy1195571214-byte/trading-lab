@@ -234,7 +234,7 @@ export default function ReplayDesk({ detail, selectedId, doStep, doRun, branch, 
             onNavigate={(sourceSymbol, sourceDay) => { setPlaying(false); chooseSymbol(sourceSymbol); setDay(sourceDay); }} />
         ))}
         {!timestampMode && detail.config?.demonstration?.news_role && detail.config?.evidence_pack_id &&
-          <ReplayNews experimentId={detail.id} asOf={selectedAsOf} symbol={symbol} />}
+          <ReplayNews key={`${detail.id}:${selectedAsOf}:${symbol}`} experimentId={detail.id} asOf={selectedAsOf} symbol={symbol} />}
       </div>
       <section className="replay-side desk-tabs-shell" aria-label={timestampMode ? t("时间点详情") : t("交易日详情")}>
         <div className="desk-tabs" role="tablist" aria-label={t("交易台信息")} onKeyDown={(e) => {
